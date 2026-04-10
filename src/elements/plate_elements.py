@@ -7,7 +7,7 @@ import numpy as np
 
 class HeterosisPlateElement(PlateElementBase):
     """
-    Heterosis Mindlin-Reissner plate element.
+    Heterosis plate element.
 
     Local ordering:
         [theta_x1, theta_y1, ..., theta_x9, theta_y9,  w_1..w_8]

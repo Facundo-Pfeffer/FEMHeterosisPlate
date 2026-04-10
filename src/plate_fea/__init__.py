@@ -3,7 +3,7 @@ from .mesh_generation import (
     PlateWithHoleGeometry,
     UniformBufferRingQ8Generator,
     UniformEightBlockQ8Generator,
-    generate_rectangular_q8_mesh,
+    generate_rectangular_heterosis_mesh,
     generate_structured_q8_plate_with_hole_mesh,
 )
 from .mesh import HeterosisMesh
@@ -16,7 +16,7 @@ __all__ = [
     "PlateWithHoleGeometry",
     "UniformEightBlockQ8Generator",
     "UniformBufferRingQ8Generator",
-    "generate_rectangular_q8_mesh",
+    "generate_rectangular_heterosis_mesh",
     "generate_structured_q8_plate_with_hole_mesh",
     "plot_heterosis_mesh",
     "ProblemConfig",

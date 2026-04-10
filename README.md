@@ -1,6 +1,6 @@
 # FEMHeterosisPlate
 
-Finite element implementation of a shear-deformable isotropic plate solver based on a heterosis Reissner-Mindlin quadrilateral element.
+Finite element implementation of a shear-deformable isotropic plate solver based on a heterosis quadrilateral element.
 
 Current element/model choices:
 - Q8 interpolation for transverse displacement `w`
@@ -39,7 +39,7 @@ python -m pytest tests/ -q
 
 ## 3) Core formulation implemented
 
-The code implements Reissner-Mindlin generalized variables:
+The code implements heterosis plate generalized variables:
 - `w`
 - `theta_x`, `theta_y`
 

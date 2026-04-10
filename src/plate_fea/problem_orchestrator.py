@@ -10,7 +10,11 @@ from plate_fea.boundary_conditions import ElementEdgeLineLoad, EssentialBoundary
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh import HeterosisMesh
-from plate_fea.mesh_generation import PlateWithHoleGeometry, UniformBufferRingQ8Generator, generate_rectangular_q8_mesh
+from plate_fea.mesh_generation import (
+    PlateWithHoleGeometry,
+    UniformBufferRingQ8Generator,
+    generate_rectangular_heterosis_mesh,
+)
 from plate_fea.model import PlateModel
 from plate_fea.solver import solve_linear_system
 
@@ -182,7 +186,7 @@ def solve_clamped_square_plate_line_load_case(
     """
     Solve a square plate case with all outer edges clamped and a line load on the top boundary.
     """
-    mesh = generate_rectangular_q8_mesh(
+    mesh = generate_rectangular_heterosis_mesh(
         width=config.side_length,
         height=config.side_length,
         nx=config.nx,

@@ -12,7 +12,7 @@ from plate_fea.quadrature import gauss_legendre_1d, tensor_product_rule
 
 class HeterosisPlateElement(PlateElementBase):
     """
-    Heterosis Mindlin-Reissner plate element.
+    Heterosis plate element.
 
     Local ordering:
         [w_1..w_8, theta_x1, theta_y1, ..., theta_x9, theta_y9]

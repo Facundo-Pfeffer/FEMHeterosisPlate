@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "plate-fea-starter"
 version = "0.1.0"
-description = "Starter code for a Mindlin-Reissner heterosis plate finite element solver"
+description = "Starter code for a heterosis plate finite element solver"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

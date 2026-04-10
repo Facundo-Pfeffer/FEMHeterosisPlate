@@ -6,13 +6,13 @@ from plate_fea.assembly import assemble_force_vector, assemble_stiffness_matrix
 from plate_fea.boundary_conditions import ElementSurfaceLoad, EssentialBoundaryCondition
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
-from plate_fea.mesh_generation import generate_rectangular_q8_mesh
+from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
 from plate_fea.model import PlateModel
 from plate_fea.solver import solve_linear_system
 
 
 def test_clamped_square_uniform_pressure_center_is_downward() -> None:
-    mesh = generate_rectangular_q8_mesh(width=1.0, height=1.0, nx=6, ny=6)
+    mesh = generate_rectangular_heterosis_mesh(width=1.0, height=1.0, nx=6, ny=6)
     model = PlateModel(
         mesh=mesh,
         material=PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=0.2),
