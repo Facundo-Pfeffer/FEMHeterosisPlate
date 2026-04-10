@@ -96,7 +96,7 @@ scripts/
 ├── run_smoke_test.py
 ├── run_problem.py
 ├── run_patch_test_linear_field.py
-├── run_clamped_square_uniform_pressure.py
+├── run_ssss_square_uniform_pressure.py
 ├── plot_mesh.py
 ├── plot_mesh_sliders.py
 └── plot_mesh_demo.py
@@ -109,7 +109,7 @@ tests/
 ├── test_shape_functions.py
 ├── test_material_constitutive_cache.py
 ├── test_patch_linear_field.py
-└── test_clamped_square_uniform_pressure.py
+└── test_ssss_uniform_pressure_vs_navier.py
 ```
 
 ---
@@ -141,13 +141,13 @@ python scripts/run_patch_test_linear_field.py
 
 Checks exact linear field reproduction with near machine-precision error.
 
-### 5.3 Clamped square plate under uniform pressure
+### 5.3 Simply supported square plate under uniform pressure (Navier check)
 
 ```bash
-python scripts/run_clamped_square_uniform_pressure.py --nx 12 --ny 12
+python scripts/run_ssss_square_uniform_pressure.py --nx 20 --ny 20
 ```
 
-Reports FE center deflection and a classical thin-plate reference value for context.
+SI defaults: 1 m span, 5 mm thickness, 200 GPa, uniform −10 kPa pressure. All edges pinned in translation (`w = 0`); edge moments natural. Compares FE centre deflection [m] to the Kirchhoff–Navier series (shear deformable element is slightly more flexible than thin-plate theory).
 
 ---
 
