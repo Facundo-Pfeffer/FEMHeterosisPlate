@@ -26,10 +26,10 @@ From repository root:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-Run tests:
+Tests are **pytest** modules (`tests/test_*.py`, functions named `test_*`). Run:
 
 ```bash
 python -m pytest tests/ -q
@@ -97,6 +97,7 @@ scripts/
 ├── run_problem.py
 ├── run_patch_test_linear_field.py
 ├── run_ssss_square_uniform_pressure.py
+├── run_clamped_square_uniform_pressure.py
 ├── plot_mesh.py
 ├── plot_mesh_sliders.py
 └── plot_mesh_demo.py
@@ -109,7 +110,8 @@ tests/
 ├── test_shape_functions.py
 ├── test_material_constitutive_cache.py
 ├── test_patch_linear_field.py
-└── test_ssss_uniform_pressure_vs_navier.py
+├── test_ssss_uniform_pressure_vs_navier.py
+└── test_clamped_square_uniform_pressure.py
 ```
 
 ---
@@ -148,6 +150,14 @@ python scripts/run_ssss_square_uniform_pressure.py --nx 20 --ny 20
 ```
 
 SI defaults: 1 m span, 5 mm thickness, 200 GPa, uniform −10 kPa pressure. All edges pinned in translation (`w = 0`); edge moments natural. Compares FE centre deflection [m] to the Kirchhoff–Navier series (shear deformable element is slightly more flexible than thin-plate theory).
+
+### 5.4 Clamped square plate under uniform pressure (Kirchhoff β check)
+
+```bash
+python scripts/run_clamped_square_uniform_pressure.py --nx 20 --ny 20
+```
+
+Same SI defaults as §5.3; all edges clamped (`w = θ_x = θ_y = 0` on the boundary). Compares FE centre deflection to the classical thin-plate value `w = β q a⁴ / D` with `β ≈ 0.00126532` (tabulated for `ν ≈ 0.3`, e.g. Timoshenko & Woinowsky-Krieger).
 
 ---
 
