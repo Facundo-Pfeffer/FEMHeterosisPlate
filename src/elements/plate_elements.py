@@ -13,7 +13,7 @@ class HeterosisPlateElement(PlateElementBase):
         [theta_x1, theta_y1, ..., theta_x9, theta_y9,  w_1..w_8]
     """
 
-    local_edge_nodes = {
+    local_edge_node_ids = {
         1: np.array([0, 4, 1], dtype=int),
         2: np.array([1, 5, 2], dtype=int),
         3: np.array([2, 6, 3], dtype=int),

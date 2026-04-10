@@ -1,0 +1,92 @@
+Metadata-Version: 2.4
+Name: plate-fea-starter
+Version: 0.1.0
+Summary: Starter code for a Mindlin-Reissner heterosis plate finite element solver
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: matplotlib>=3.8
+Requires-Dist: numpy>=1.26
+Requires-Dist: scipy>=1.11
+
+# plate-fea-starter
+
+Starter project for a shear-deformable isotropic plate code built around the heterosis plate element:
+- Q8 interpolation for transverse displacement `w`
+- Q9 interpolation for rotations `theta_x`, `theta_y`
+- `3 x 3` quadrature for bending
+- `2 x 2` quadrature for shear
+
+The package is intentionally split into small files so the element formulation, assembly, mesh handling, and boundary conditions remain easy to test in isolation.
+
+## Proposed development order
+
+1. Verify the one-dimensional and two-dimensional quadrature rules.
+2. Verify the Q8 and Q9 shape functions and their derivatives.
+3. Verify Jacobian and gradient mapping on a single rectangular element.
+4. Assemble a single-element stiffness matrix and check symmetry.
+5. Assemble a small rectangular plate before moving to the plate-with-cutout geometry.
+6. Add the interior edge load on the cutout.
+7. Run mesh refinement studies and compare against FEAP when needed.
+
+## Local element degrees of freedom
+
+The local element vector is ordered as:
+
+```text
+q_e = [
+    w1, w2, w3, w4, w5, w6, w7, w8,
+    theta_x1, theta_y1,
+    theta_x2, theta_y2,
+    ...,
+    theta_x9, theta_y9
+]^T
+```
+
+This gives `8 + 2*9 = 26` local degrees of freedom.
+
+## Global numbering convention
+
+The global unknown vector is ordered as:
+
+```text
+u = [w all nodes, theta_x/theta_y all theta nodes]^T
+```
+
+That is:
+- the `w` field is stored first
+- the rotational field is stored after it
+- the Q9 center rotation node is element-specific and is appended automatically when `theta_location_matrix` is not provided
+
+## Folder layout
+
+```text
+plate_fea_starter/
+├── pyproject.toml
+├── README.md
+├── scripts/
+│   └── run_smoke_test.py
+├── src/
+│   └── plate_fea/
+│       ├── __init__.py
+│       ├── assembly.py
+│       ├── boundary_conditions.py
+│       ├── materials.py
+│       ├── mesh.py
+│       ├── model.py
+│       ├── quadrature.py
+│       ├── solver.py
+│       └── elements/
+│           ├── __init__.py
+│           ├── base.py
+│           └── heterosis_plate.py
+└── tests/
+    └── test_shape_functions.py
+```
+
+## Notes on the actual assignment mesh
+
+For the plate with a centered rectangular cutout, the cleanest first version is usually:
+- generating the mesh externally, or
+- hard-coding node coordinates and element connectivity for the first working case
+
+The provided `HeterosisMesh.from_arrays(...)` constructor is meant exactly for that workflow.
