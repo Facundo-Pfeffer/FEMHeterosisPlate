@@ -1,3 +1,5 @@
+"""Heterosis quadrilateral: Q8 ``w``, Q9 rotations, selective integration for bending vs shear."""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -155,6 +157,26 @@ class HeterosisPlateElement(PlateElementBase):
         return np.array([s - 0.50, -2.0 * s, s + 0.50], dtype=float)
 
     @staticmethod
+    def positive_area_jacobian_det(
+        jacobian: np.ndarray,
+        element_id: int,
+        *,
+        context: str,
+    ) -> float:
+        """
+        Require a strictly positive area Jacobian det(∂(x,y)/∂(ξ,η)) at a parent-space point.
+
+        Used for stiffness and area-distributed loads so assembly never integrates on a
+        degenerate or inverted Q8 geometry map.
+        """
+        det = float(np.linalg.det(np.asarray(jacobian, dtype=float)))
+        if det <= 0.0:
+            raise ValueError(
+                f"Non-positive area Jacobian det={det} in element {element_id} ({context}).",
+            )
+        return det
+
+    @staticmethod
     def geometry_jacobian(xi: float, eta: float, geometry_coordinates: np.ndarray) -> np.ndarray:
         """Compute the 2x2 geometric Jacobian d(x,y)/d(xi,eta) from Q8 geometry mapping."""
         dN_dxi, dN_deta = HeterosisPlateElement.q8_shape_function_gradients_parent(xi, eta)
@@ -235,30 +257,44 @@ class HeterosisPlateElement(PlateElementBase):
         mesh: HeterosisMesh,
         material: PlateMaterial,
         element_id: int,
+        **kwargs: object,
     ) -> np.ndarray:
         """
         Compute local 26x26 stiffness matrix for one heterosis plate element.
 
         Uses split integration:
-        - bending part with 3x3 Gauss rule
-        - shear part with 2x2 Gauss rule
+        - bending part with ``bending_quadrature_order`` (default 3×3 Gauss)
+        - shear part with ``shear_quadrature_order`` (default 2×2 Gauss)
+
+        Optional keyword arguments (patch-test / reduced integration studies):
+            bending_quadrature_order: ``(order_x, order_y)`` for tensor Gauss on bending.
+            shear_quadrature_order: ``(order_x, order_y)`` for tensor Gauss on shear.
         """
         geometry_coordinates = mesh.get_geometry_coordinates(element_id)
 
         D_b = material.bending_constitutive_matrix
         D_s = material.shear_constitutive_matrix
 
+        bend_o = kwargs.get("bending_quadrature_order", (3, 3))
+        shear_o = kwargs.get("shear_quadrature_order", (2, 2))
+        if not (isinstance(bend_o, tuple) and len(bend_o) == 2):
+            raise TypeError("bending_quadrature_order must be a pair (order_x, order_y).")
+        if not (isinstance(shear_o, tuple) and len(shear_o) == 2):
+            raise TypeError("shear_quadrature_order must be a pair (order_x, order_y).")
+        bx, by = int(bend_o[0]), int(bend_o[1])
+        sx, sy = int(shear_o[0]), int(shear_o[1])
+
         K_b = np.zeros((26, 26), dtype=float)
         K_s = np.zeros((26, 26), dtype=float)
 
         # Bending: curvatures depend on theta gradients.
-        bending_rule = tensor_product_rule(order_x=3, order_y=3)
+        bending_rule = tensor_product_rule(order_x=bx, order_y=by)
         for point, weight in zip(bending_rule.points, bending_rule.weights):
             xi, eta = point
             jacobian = self.geometry_jacobian(xi, eta, geometry_coordinates)
-            det_jacobian = np.linalg.det(jacobian)
-            if det_jacobian <= 0.0:
-                raise ValueError(f"Non-positive Jacobian detected in element {element_id}.")
+            det_jacobian = self.positive_area_jacobian_det(
+                jacobian, element_id, context="bending quadrature",
+            )
 
             dN_theta_dxi, dN_theta_deta = self.q9_shape_function_gradients_parent(xi, eta)
             dN_theta_dx, dN_theta_dy = self.parent_to_physical_gradients(
@@ -270,13 +306,13 @@ class HeterosisPlateElement(PlateElementBase):
             K_b += weight * (B_b.T @ D_b @ B_b) * det_jacobian
 
         # Shear: gamma = grad(w) - theta.
-        shear_rule = tensor_product_rule(order_x=2, order_y=2)
+        shear_rule = tensor_product_rule(order_x=sx, order_y=sy)
         for point, weight in zip(shear_rule.points, shear_rule.weights):
             xi, eta = point
             jacobian = self.geometry_jacobian(xi, eta, geometry_coordinates)
-            det_jacobian = np.linalg.det(jacobian)
-            if det_jacobian <= 0.0:
-                raise ValueError(f"Non-positive Jacobian detected in element {element_id}.")
+            det_jacobian = self.positive_area_jacobian_det(
+                jacobian, element_id, context="shear quadrature",
+            )
 
             dN_w_dxi, dN_w_deta = self.q8_shape_function_gradients_parent(xi, eta)
             dN_w_dx, dN_w_dy = self.parent_to_physical_gradients(dN_w_dxi, dN_w_deta, jacobian)
@@ -321,6 +357,10 @@ class HeterosisPlateElement(PlateElementBase):
                     + (dN_edge_ds @ edge_coordinates[:, 1]) ** 2
                 )
             )
+            if jacobian_edge <= 0.0:
+                raise ValueError(
+                    f"Non-positive edge length Jacobian in element {element_id}, edge_id={edge_id}.",
+                )
 
             q_q = traction(x_q, y_q) if callable(traction) else float(traction)
             local_force[edge_node_ids_local] += weight * N_edge * q_q * jacobian_edge
@@ -346,9 +386,9 @@ class HeterosisPlateElement(PlateElementBase):
             xi, eta = point
             N_w = self.q8_shape_functions(float(xi), float(eta))
             jacobian = self.geometry_jacobian(float(xi), float(eta), geometry_coordinates)
-            det_jacobian = float(np.linalg.det(jacobian))
-            if det_jacobian <= 0.0:
-                raise ValueError(f"Non-positive Jacobian detected in element {element_id}.")
+            det_jacobian = self.positive_area_jacobian_det(
+                jacobian, element_id, context="surface pressure quadrature",
+            )
 
             # Physical quadrature point for callable tractions q(x,y).
             x_q = float(N_w @ geometry_coordinates[:, 0])

@@ -1,3 +1,5 @@
+"""Abstract plate element: local K, load vectors, and DOF scatter into global numbering."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -16,6 +18,7 @@ class PlateElementBase(ABC):
         mesh: HeterosisMesh,
         material: PlateMaterial,
         element_id: int,
+        **kwargs: object,
     ) -> np.ndarray:
         raise NotImplementedError
 

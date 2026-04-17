@@ -1,3 +1,5 @@
+"""Loads and essential (Dirichlet) data attached to the FE model before assembly."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -13,6 +15,8 @@ class EssentialBoundaryCondition:
 
 @dataclass(frozen=True)
 class ElementEdgeLineLoad:
+    """Line traction on one edge of a quadrilateral (see element local edge numbering)."""
+
     element_id: int
     edge_id: int
     magnitude: float | Callable[[float, float], float]
@@ -20,5 +24,7 @@ class ElementEdgeLineLoad:
 
 @dataclass(frozen=True)
 class ElementSurfaceLoad:
+    """Uniform or pointwise pressure-like load over the element mid-surface."""
+
     element_id: int
     magnitude: float | Callable[[float, float], float]

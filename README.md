@@ -29,7 +29,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Tests are **pytest** modules (`tests/test_*.py`, functions named `test_*`). Run:
+Tests live under **`tests/`** in **`unit/`**, **`integration/`**, and **`validation/`** (see **`tests/README.md`**). Run:
 
 ```bash
 python -m pytest tests/ -q
@@ -84,6 +84,11 @@ src/plate_fea/
 ├── problem_orchestrator.py     # high-level solve workflows
 ├── quadrature.py               # Gauss rules (cached)
 ├── solver.py                   # constrained sparse solve
+├── patch_test/                 # Ch. 11-style patch tests (Zienkiewicz et al., *FEM: Basis and Fundamentals*, 8th ed.)
+│   ├── engine.py               # Tests A/B/C, suite runner, reporting
+│   ├── plate_exact_states.py   # linear / quadratic patch fields for w, θ
+│   ├── diagnostics.py          # residual, rank, spectrum (small patches)
+│   └── …
 └── elements/
     ├── base.py                 # element interface
     └── heterosis_plate.py      # shape functions, B-matrices, local K/f
@@ -95,24 +100,42 @@ Scripts:
 scripts/
 ├── run_smoke_test.py
 ├── run_problem.py
-├── run_patch_test_linear_field.py
+├── run_patch_test_chapter11.py
 ├── run_ssss_square_uniform_pressure.py
 ├── run_clamped_square_uniform_pressure.py
+├── convergence_compare_uniform_vs_gmsh.py
+├── convergence_study_point_a.py
 ├── plot_mesh.py
 ├── plot_mesh_sliders.py
-└── plot_mesh_demo.py
+├── plot_mesh_demo.py
+└── plot_mesh_strategies_comparison.py
 ```
 
 Tests:
 
 ```text
 tests/
-├── test_shape_functions.py
-├── test_material_constitutive_cache.py
-├── test_patch_linear_field.py
-├── test_ssss_uniform_pressure_vs_navier.py
-└── test_clamped_square_uniform_pressure.py
+├── README.md
+├── unit/
+│   ├── test_shape_functions.py
+│   └── test_material_constitutive_cache.py
+├── integration/
+│   ├── test_element_jacobian_and_stiffness.py
+│   ├── test_patch_linear_field.py
+│   ├── test_patch_chapter11_framework.py
+│   └── test_mesh_strategies.py
+└── validation/
+    ├── test_ssss_uniform_pressure_vs_navier.py
+    └── test_clamped_square_uniform_pressure.py
 ```
+
+---
+
+## Patch testing (Zienkiewicz et al., *FEM: Basis and Fundamentals*, 8th ed., Ch. 11)
+
+Documentation, notation, vocabulary, scope, and how to run the suite: **`src/plate_fea/patch_test/README.md`**.
+
+Exact linear-field patch (closed-form) regression: **`tests/integration/test_patch_linear_field.py`** — run `python -m pytest tests/integration/test_patch_linear_field.py -q`.
 
 ---
 
@@ -135,13 +158,13 @@ Pipeline:
 6. constrained solve
 7. point-of-interest deflection extraction
 
-### 5.2 Linear closed-form patch test
+### 5.2 Patch suite from Zienkiewicz et al. (Ch. 11; Tests A/B/C, diagnostics, quadrature)
 
 ```bash
-python scripts/run_patch_test_linear_field.py
+python scripts/run_patch_test_chapter11.py
 ```
 
-Checks exact linear field reproduction with near machine-precision error.
+Use flags such as `--no-reduced-quadrature`, `--no-distorted`, `--one-linear-mode` to shorten runs. See **`src/plate_fea/patch_test/README.md`** for full scope.
 
 ### 5.3 Simply supported square plate under uniform pressure (Navier check)
 
@@ -186,7 +209,7 @@ Sliders:
 
 - Constitutive matrices are precomputed once per `PlateMaterial` instance and stored read-only.
 - Quadrature rules are cached (`lru_cache`) to avoid repeated allocation in element loops.
-- Jacobian positivity is checked at quadrature points.
+- Area Jacobian `det(∂(x,y)/∂(ξ,η))` is required strictly positive at stiffness and surface quadrature points (`HeterosisPlateElement.positive_area_jacobian_det`); edge traction uses a positive line metric.
 - Global assembly uses sparse CSR matrices.
 
 ---

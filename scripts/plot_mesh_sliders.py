@@ -66,6 +66,7 @@ def _configure_main_axes(ax: Axes, geometry: PlateWithHoleGeometry) -> None:
 @dataclass
 class PlotArtists:
     edge_collection: LineCollection
+    q9_center_scatter: any
     buffer_line_x: any
     info_text: any
 
@@ -81,6 +82,14 @@ def _create_static_overlays(ax: Axes, geometry: PlateWithHoleGeometry) -> PlotAr
     # Mesh edge collection
     edge_collection = LineCollection([], colors=["0.35"], linewidths=0.6, alpha=0.55, zorder=2)
     ax.add_collection(edge_collection)
+    q9_center_scatter = ax.scatter(
+        [],
+        [],
+        c="0.35",
+        s=8,
+        zorder=5,
+        alpha=0.9,
+    )
 
     outer = _rect_polyline(0.0, geometry.outer_width, 0.0, geometry.outer_height)
     hole = _rect_polyline(geometry.hole_x_min, geometry.hole_x_max, geometry.hole_y_min, geometry.hole_y_max)
@@ -135,8 +144,12 @@ def _create_static_overlays(ax: Axes, geometry: PlateWithHoleGeometry) -> PlotAr
         bbox=dict(facecolor="white", edgecolor="0.8", alpha=0.85, boxstyle="round,pad=0.3"),
     )
 
-    ax.legend(loc="lower left", frameon=True, framealpha=0.92, facecolor="white", edgecolor="0.8", fontsize=8)
-    return PlotArtists(edge_collection=edge_collection, buffer_line_x=buffer_line, info_text=info_text)
+    return PlotArtists(
+        edge_collection=edge_collection,
+        q9_center_scatter=q9_center_scatter,
+        buffer_line_x=buffer_line,
+        info_text=info_text,
+    )
 
 
 def _create_controls(fig: Figure, geometry: PlateWithHoleGeometry) -> PlotControls:
@@ -170,6 +183,7 @@ def _update_plot(fig: Figure, geometry: PlateWithHoleGeometry, controls: PlotCon
     )
     artists.buffer_line_x.set_data(b[:, 0], b[:, 1])
 
+    # Sliders may hit invalid mesh settings; catch any generator failure and show it in the figure.
     try:
         mesh = UniformBufferRingQ8Generator(
             geometry=geometry,
@@ -179,12 +193,16 @@ def _update_plot(fig: Figure, geometry: PlateWithHoleGeometry, controls: PlotCon
         ).generate()
     except Exception as exc:  # noqa: BLE001
         artists.edge_collection.set_segments([])
+        artists.q9_center_scatter.set_offsets(np.empty((0, 2), dtype=float))
         artists.info_text.set_text(f"Error:\n  {exc}")
         fig.canvas.draw_idle()
         return
 
     segments = _unique_q8_edge_segments(mesh.node_coordinates, mesh.w_location_matrix)
     artists.edge_collection.set_segments(segments)
+    q9_center_theta_ids = np.unique(mesh.theta_location_matrix[8, :])
+    q9_center_xy = mesh.theta_node_coordinates[q9_center_theta_ids, :]
+    artists.q9_center_scatter.set_offsets(q9_center_xy)
     artists.info_text.set_text(
         f"\nParams:\n"
         f"  resolution   = {resolution}\n"
@@ -193,6 +211,7 @@ def _update_plot(fig: Figure, geometry: PlateWithHoleGeometry, controls: PlotCon
         f"\nCounts:\n"
         f"  elements = {mesh.total_element_number}\n"
         f"  w_nodes  = {mesh.total_w_node_number}\n"
+        f"  q9 ctrs  = {q9_center_xy.shape[0]}\n"
         f"  dofs     = {mesh.total_dof_number}"
     )
     fig.canvas.draw_idle()

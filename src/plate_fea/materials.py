@@ -1,3 +1,5 @@
+"""Isotropic heterosis plate stiffness: bending (D_b) and shear (D_s) matrices."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

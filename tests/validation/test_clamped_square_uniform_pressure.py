@@ -2,13 +2,13 @@
 CCCC square plate, uniform pressure: FE vs Kirchhoff centre deflection (tabulated β).
 
 Classical thin plate: all edges clamped (w = ∂w/∂n = 0 in Kirchhoff); uniform q.
-FE: w = θ_x = θ_y = 0 on boundary w-nodes (clamped Mindlin / heterosis).
+FE: w = θ_x = θ_y = 0 on boundary w-nodes (clamped heterosis plate).
 
 Reference: w = β q a⁴ / D with β ≈ 0.00126532 (ν ≈ 0.3), e.g. Timoshenko & Woinowsky-Krieger.
 
 Sign: model pressure < 0 ⇒ w < 0; reference uses +|q| ⇒ compare to −w_ref.
 
-rtol=0.002: Mindlin shear + Q8 mesh vs thin-plate β (same SI case as the SSSS test).
+rtol=0.002: heterosis plate shear + Q8 mesh vs thin-plate β (same SI case as the SSSS test).
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ def test_clamped_square_uniform_pressure_center_matches_kirchhoff_factor() -> No
     mesh = generate_rectangular_heterosis_mesh(width=a_m, height=a_m, nx=nx, ny=ny)
     model = PlateModel(
         mesh=mesh,
-        material=PlateMaterial(
+        constitutive_material=PlateMaterial(
             young_modulus=young_pa, poisson_ratio=nu, thickness=thickness_m
         ),
-        element=HeterosisPlateElement(),
+        element_formulation=HeterosisPlateElement(),
     )
 
     xy = mesh.node_coordinates

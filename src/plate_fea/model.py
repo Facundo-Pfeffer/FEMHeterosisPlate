@@ -1,3 +1,5 @@
+"""Discrete plate model: mesh, material, element formulation, BCs, and loads before assembly."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,12 +14,23 @@ from plate_fea.mesh import HeterosisMesh
 
 @dataclass
 class PlateModel:
+    """
+    Collects everything needed to form K and F.
+
+    Global displacement order: all ``w`` DOFs first (one per w-node), then ``theta_x`` / ``theta_y``
+    pairs for each theta-node (see ``get_*_dof``).
+
+    Optional ``element_stiffness_kwargs`` is forwarded to ``element_formulation.compute_stiffness_matrix``
+    (e.g. reduced quadrature in patch-test studies).
+    """
+
     mesh: HeterosisMesh
-    material: PlateMaterial
-    element: PlateElementBase
+    constitutive_material: PlateMaterial
+    element_formulation: PlateElementBase
     essential_conditions: list[EssentialBoundaryCondition] = field(default_factory=list)
     line_loads: list[ElementEdgeLineLoad] = field(default_factory=list)
     surface_loads: list[ElementSurfaceLoad] = field(default_factory=list)
+    element_stiffness_kwargs: dict[str, object] = field(default_factory=dict)
 
     def add_essential_condition(self, condition: EssentialBoundaryCondition) -> None:
         self.essential_conditions.append(condition)
@@ -38,6 +51,7 @@ class PlateModel:
         return self.mesh.total_w_node_number + 2 * int(theta_node_id) + 1
 
     def build_essential_boundary_arrays(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return (prescribed_dof_indices, prescribed_values) for the solver partition."""
         dof_value_pairs: dict[int, float] = {}
 
         for condition in self.essential_conditions:

@@ -1,3 +1,5 @@
+"""Matplotlib helpers for visualising heterosis mesh connectivity."""
+
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
@@ -19,16 +21,19 @@ def plot_heterosis_mesh(
     ax: Axes | None = None,
     show_w_nodes: bool = True,
     show_theta_nodes: bool = False,
+    show_q9_center_nodes: bool = True,
     w_node_color: str = "C0",
     theta_node_color: str = "C3",
+    q9_center_node_color: str | None = None,
     element_edge_color: str = "0.35",
-    title: str | None = "Heterosis mesh (Q8 geometry)",
+    title: str | None = "Heterosis mesh (Q8 geometry, Q9 rotation interpolation)",
 ) -> tuple[Figure, Axes]:
     """
     Plot the mesh geometry: Q8 elements from ``w_location_matrix`` / ``node_coordinates``.
 
     When ``theta_location_matrix`` uses generated centers (default ``from_arrays``),
     set ``show_theta_nodes=True`` to overlay Q9 nodes, including element center rotations.
+    ``show_q9_center_nodes=True`` overlays only the local Q9 center rotation node per element.
     """
     if ax is None:
         fig, ax = plt.subplots()
@@ -63,16 +68,26 @@ def plot_heterosis_mesh(
             label="θ nodes",
         )
 
+    if show_q9_center_nodes:
+        center_color = q9_center_node_color or element_edge_color
+        center_theta_ids = np.unique(mesh.theta_location_matrix[8, :])
+        center_xy = mesh.theta_node_coordinates[center_theta_ids, :]
+        ax.scatter(
+            center_xy[:, 0],
+            center_xy[:, 1],
+            s=8,
+            c=center_color,
+            zorder=5,
+            marker="o",
+            edgecolors="none",
+            alpha=0.9,
+        )
+
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     if title:
         ax.set_title(title)
-
-    handles, labels = ax.get_legend_handles_labels()
-    if labels:
-        by_label: dict[str, object] = dict(zip(labels, handles, strict=False))
-        ax.legend(by_label.values(), by_label.keys(), loc="best", fontsize=8)
 
     return fig, ax
 
@@ -82,10 +97,16 @@ def show_mesh_plot(
     *,
     show_w_nodes: bool = True,
     show_theta_nodes: bool = False,
+    show_q9_center_nodes: bool = True,
     block: bool = True,
 ) -> None:
     """
     Convenience wrapper: build a figure and call ``plt.show()``.
     """
-    plot_heterosis_mesh(mesh, show_w_nodes=show_w_nodes, show_theta_nodes=show_theta_nodes)
+    plot_heterosis_mesh(
+        mesh,
+        show_w_nodes=show_w_nodes,
+        show_theta_nodes=show_theta_nodes,
+        show_q9_center_nodes=show_q9_center_nodes,
+    )
     plt.show(block=block)

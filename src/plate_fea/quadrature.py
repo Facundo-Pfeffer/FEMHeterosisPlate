@@ -1,3 +1,5 @@
+"""Cached Gauss–Legendre rules and 2D tensor products for element integration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,5 +1,8 @@
+"""Heterosis plate finite element package (mesh, element, assembly, and example drivers)."""
+
 from .elements import HeterosisPlateElement
 from .mesh_generation import (
+    GmshBoundarySensitiveQ8Generator,
     PlateWithHoleGeometry,
     UniformBufferRingQ8Generator,
     UniformEightBlockQ8Generator,
@@ -13,6 +16,7 @@ from .problem_orchestrator import ProblemConfig, ProblemResult, solve_plate_prob
 __all__ = [
     "HeterosisMesh",
     "HeterosisPlateElement",
+    "GmshBoundarySensitiveQ8Generator",
     "PlateWithHoleGeometry",
     "UniformEightBlockQ8Generator",
     "UniformBufferRingQ8Generator",

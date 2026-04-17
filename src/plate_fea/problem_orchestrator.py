@@ -1,51 +1,77 @@
+"""
+High-level workflows for specific plate problems.
+
+Convention for functions that take both ``ProblemConfig`` and another argument:
+``config`` is always the first parameter (inputs / problem definition before state).
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
+from scipy.sparse import csr_matrix
 
-from plate_fea.assembly import assemble_force_vector, assemble_stiffness_matrix
 from plate_fea.boundary_conditions import ElementEdgeLineLoad, EssentialBoundaryCondition
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh import HeterosisMesh
 from plate_fea.mesh_generation import (
+    GmshBoundarySensitiveQ8Generator,
     PlateWithHoleGeometry,
     UniformBufferRingQ8Generator,
     generate_rectangular_heterosis_mesh,
 )
 from plate_fea.model import PlateModel
-from plate_fea.solver import solve_linear_system
+from plate_fea.solver import solve_displacement_system
 
 OuterEdgeName = Literal["left", "right", "bottom", "top"]
+MeshStrategyName = Literal[
+    "uniform_buffer_ring",
+    "gmsh_boundary_sensitive",
+]
 
 
 @dataclass(frozen=True)
 class ProblemConfig:
+    """
+    Plate-with-hole benchmark (assignment-style).
+
+    Mesh strategies: ``uniform_buffer_ring`` (baseline) and
+    ``gmsh_boundary_sensitive`` (requires gmsh + libGLU).
+
+    **Consistent mm–N–MPa system:** coordinates and thickness in ``mm``; ``young_modulus`` in
+    ``N/mm²`` (= MPa); line load ``hole_top_shear_load`` in ``N/mm`` (force per unit edge length,
+    transverse ``w``). Default load matches **1 kN/mm downward** on the hole top edge → ``-1000``.
+    """
+
     geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
 
     # Mesh controls
+    mesh_strategy: MeshStrategyName = "uniform_buffer_ring"
     resolution: int = 2
     hole_refine: int = 2
     buffer: float = 30.0
 
-    # Material
-    young_modulus: float = 200.0
+    # Material (figure: E = 200000 N/mm² after typo correction; ν = 0.25; t = 20 mm)
+    young_modulus: float = 200000.0
     poisson_ratio: float = 0.25
     thickness: float = 20.0
 
-    # BC and load
+    # BC and load (figure: clamp left + top; hole-top shear 1 kN/mm downward → −1000 N/mm)
     clamped_outer_edges: tuple[OuterEdgeName, ...] = ("left", "top")
-    # Positive value is interpreted in +w direction; use negative for downward load.
-    hole_top_shear_load: float = -1.0
+    # Transverse line traction on hole top edge [N/mm]. Positive = +w; assignment uses downward → negative.
+    hole_top_shear_load: float = -1000.0
     tolerance: float = 1.0e-9
 
 
 @dataclass(frozen=True)
 class ProblemResult:
+    """Outputs of ``solve_plate_problem``: discrete system and sampled deflection."""
+
     model: PlateModel
-    stiffness_matrix: object
+    stiffness_matrix: csr_matrix
     force_vector: np.ndarray
     solution: np.ndarray
     point_a_node_id: int
@@ -54,6 +80,8 @@ class ProblemResult:
 
 @dataclass(frozen=True)
 class SquarePlateCaseConfig:
+    """Fully clamped square plate with uniform line load on the top edge (separate from ``ProblemConfig``)."""
+
     side_length: float = 1.0
     nx: int = 8
     ny: int = 8
@@ -69,35 +97,54 @@ class SquarePlateCaseConfig:
 
 @dataclass(frozen=True)
 class SquarePlateCaseResult:
+    """Outputs of ``solve_clamped_square_plate_line_load_case``."""
+
     model: PlateModel
-    stiffness_matrix: object
+    stiffness_matrix: csr_matrix
     force_vector: np.ndarray
     solution: np.ndarray
     center_node_id: int
     center_deflection: float
 
 
-def assemble_mesh(config: ProblemConfig) -> HeterosisMesh:
-    generator = UniformBufferRingQ8Generator(
-        geometry=config.geometry,
-        resolution=config.resolution,
-        hole_refine=config.hole_refine,
-        buffer=config.buffer,
-    )
-    return generator.generate()
+def generate_mesh(config: ProblemConfig) -> HeterosisMesh:
+    """Build the assignment-style plate-with-hole Q8 mesh from ``config``."""
+    if config.mesh_strategy == "uniform_buffer_ring":
+        generator = UniformBufferRingQ8Generator(
+            geometry=config.geometry,
+            resolution=config.resolution,
+            hole_refine=config.hole_refine,
+            buffer=config.buffer,
+        )
+        return generator.generate()
+    if config.mesh_strategy == "gmsh_boundary_sensitive":
+        generator = GmshBoundarySensitiveQ8Generator(
+            geometry=config.geometry,
+            resolution=config.resolution,
+            hole_refine=config.hole_refine,
+            clamped_outer_edges=config.clamped_outer_edges,
+        )
+        return generator.generate()
+    raise ValueError(f"Unsupported mesh_strategy: {config.mesh_strategy}")
 
 
-def create_model(config: ProblemConfig, mesh: HeterosisMesh) -> PlateModel:
-    material = PlateMaterial(
+def build_plate_model(config: ProblemConfig, mesh: HeterosisMesh) -> PlateModel:
+    """Instantiate material and heterosis element, wrap with an empty ``PlateModel``."""
+    constitutive_material = PlateMaterial(
         young_modulus=config.young_modulus,
         poisson_ratio=config.poisson_ratio,
         thickness=config.thickness,
     )
-    element = HeterosisPlateElement()
-    return PlateModel(mesh=mesh, material=material, element=element)
+    element_formulation = HeterosisPlateElement()
+    return PlateModel(
+        mesh=mesh,
+        constitutive_material=constitutive_material,
+        element_formulation=element_formulation,
+    )
 
 
-def implement_boundary_conditions(model: PlateModel, config: ProblemConfig) -> None:
+def apply_essential_boundary_conditions(config: ProblemConfig, model: PlateModel) -> None:
+    """Clamp selected outer edges: ``w`` and both rotations zero on boundary w-nodes."""
     edge_to_axis_value: dict[OuterEdgeName, tuple[str, float]] = {
         "left": ("x", 0.0),
         "right": ("x", config.geometry.outer_width),
@@ -113,8 +160,8 @@ def implement_boundary_conditions(model: PlateModel, config: ProblemConfig) -> N
             )
 
 
-def implement_loads(model: PlateModel, config: ProblemConfig) -> None:
-    # Apply distributed shear load on the top edge of the hole.
+def apply_hole_top_line_loads(config: ProblemConfig, model: PlateModel) -> None:
+    """Distribute ``hole_top_shear_load`` as line loads on element edges along the hole top."""
     y_target = config.geometry.hole_y_max
     x_lower = config.geometry.hole_x_min
     x_upper = config.geometry.hole_x_max
@@ -143,18 +190,8 @@ def implement_loads(model: PlateModel, config: ProblemConfig) -> None:
             )
 
 
-def assemble_system(model: PlateModel) -> tuple[object, np.ndarray]:
-    stiffness = assemble_stiffness_matrix(model)
-    force = assemble_force_vector(model)
-    return stiffness, force
-
-
-def solve_system(model: PlateModel, stiffness_matrix, force_vector: np.ndarray) -> np.ndarray:
-    bc_ess, bc_val = model.build_essential_boundary_arrays()
-    return solve_linear_system(stiffness_matrix, force_vector, bc_ess, bc_val)
-
-
-def extract_point_a_deflection(mesh: HeterosisMesh, solution: np.ndarray, config: ProblemConfig) -> tuple[int, float]:
+def extract_point_a_deflection(config: ProblemConfig, mesh: HeterosisMesh, solution: np.ndarray) -> tuple[int, float]:
+    """Nearest mesh node to the hole corner (x_max, y_min); return its index and ``w``."""
     target = np.array([config.geometry.hole_x_max, config.geometry.hole_y_min], dtype=float)
     distances = np.linalg.norm(mesh.node_coordinates - target[None, :], axis=1)
     node_id = int(np.argmin(distances))
@@ -163,13 +200,13 @@ def extract_point_a_deflection(mesh: HeterosisMesh, solution: np.ndarray, config
 
 
 def solve_plate_problem(config: ProblemConfig = ProblemConfig()) -> ProblemResult:
-    mesh = assemble_mesh(config)
-    model = create_model(config, mesh)
-    implement_boundary_conditions(model, config)
-    implement_loads(model, config)
-    stiffness, force = assemble_system(model)
-    solution = solve_system(model, stiffness, force)
-    point_a_node_id, point_a_deflection = extract_point_a_deflection(mesh, solution, config)
+    """Full driver: mesh → model → BCs → hole load → K/F → u → sample deflection at point A."""
+    mesh = generate_mesh(config)
+    model = build_plate_model(config, mesh)
+    apply_essential_boundary_conditions(config, model)
+    apply_hole_top_line_loads(config, model)
+    stiffness, force, solution = solve_displacement_system(model)
+    point_a_node_id, point_a_deflection = extract_point_a_deflection(config, mesh, solution)
     return ProblemResult(
         model=model,
         stiffness_matrix=stiffness,
@@ -192,12 +229,16 @@ def solve_clamped_square_plate_line_load_case(
         nx=config.nx,
         ny=config.ny,
     )
-    material = PlateMaterial(
+    constitutive_material = PlateMaterial(
         young_modulus=config.young_modulus,
         poisson_ratio=config.poisson_ratio,
         thickness=config.thickness,
     )
-    model = PlateModel(mesh=mesh, material=material, element=HeterosisPlateElement())
+    model = PlateModel(
+        mesh=mesh,
+        constitutive_material=constitutive_material,
+        element_formulation=HeterosisPlateElement(),
+    )
 
     # 1) Clamp all edges: w = theta_x = theta_y = 0
     for axis, value in (("x", 0.0), ("x", config.side_length), ("y", 0.0), ("y", config.side_length)):
@@ -227,10 +268,7 @@ def solve_clamped_square_plate_line_load_case(
             )
 
     # 3) Assemble and solve
-    stiffness = assemble_stiffness_matrix(model)
-    force = assemble_force_vector(model)
-    bc_ess, bc_val = model.build_essential_boundary_arrays()
-    solution = solve_linear_system(stiffness, force, bc_ess, bc_val)
+    stiffness, force, solution = solve_displacement_system(model)
 
     # 4) Center deflection postprocess
     center = np.array([0.5 * config.side_length, 0.5 * config.side_length], dtype=float)

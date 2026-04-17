@@ -1,3 +1,5 @@
+"""Heterosis mesh layout: Q8 nodes for ``w``, Q9 nodes for rotations (extra center node per element)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,6 +37,7 @@ class HeterosisMesh:
             generated_theta_location_matrix = np.zeros((9, n_element), dtype=int)
             generated_theta_location_matrix[:8, :] = w_location_matrix
 
+            # Q9 center node: geometric mean of Q8 corners, new global theta-only node per element.
             for element_id in range(n_element):
                 geom_node_ids = w_location_matrix[:, element_id]
                 center_coordinates[element_id, :] = node_coordinates[geom_node_ids, :].mean(axis=0)

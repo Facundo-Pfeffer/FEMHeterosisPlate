@@ -3,6 +3,7 @@ Run the plate-with-hole FEM problem using the high-level orchestrator.
 
 Example:
     python scripts/run_problem.py --resolution 3 --hole-refine 2 --buffer 30
+    python scripts/run_problem.py --mesh-strategy gmsh_boundary_sensitive
 """
 
 from __future__ import annotations
@@ -14,13 +15,31 @@ from plate_fea.problem_orchestrator import ProblemConfig, solve_plate_problem
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Solve plate-with-hole problem with orchestrated FEM steps.")
+    parser.add_argument(
+        "--mesh-strategy",
+        type=str,
+        default="uniform_buffer_ring",
+        choices=(
+            "uniform_buffer_ring",
+            "gmsh_boundary_sensitive",
+        ),
+        help=(
+            "Mesh strategy: baseline uniform buffer ring, or gmsh boundary-sensitive "
+            "(requires pip install gmsh + libGLU, e.g. libglu1-mesa)."
+        ),
+    )
     parser.add_argument("--resolution", type=int, default=2)
     parser.add_argument("--hole-refine", type=int, default=2)
     parser.add_argument("--buffer", type=float, default=30.0)
-    parser.add_argument("--young-modulus", type=float, default=200.0)
+    parser.add_argument("--young-modulus", type=float, default=200000.0)
     parser.add_argument("--poisson-ratio", type=float, default=0.25)
     parser.add_argument("--thickness", type=float, default=20.0)
-    parser.add_argument("--hole-top-shear-load", type=float, default=-1.0)
+    parser.add_argument(
+        "--hole-top-shear-load",
+        type=float,
+        default=-1000.0,
+        help="Transverse line load on hole top edge [N/mm]; default −1000 = 1 kN/mm downward.",
+    )
     parser.add_argument(
         "--clamped-outer-edges",
         type=str,
@@ -31,6 +50,7 @@ def main() -> None:
 
     clamped_edges = tuple(edge.strip() for edge in args.clamped_outer_edges.split(",") if edge.strip())
     config = ProblemConfig(
+        mesh_strategy=str(args.mesh_strategy),  # type: ignore[arg-type]
         resolution=int(args.resolution),
         hole_refine=int(args.hole_refine),
         buffer=float(args.buffer),
@@ -43,6 +63,7 @@ def main() -> None:
     result = solve_plate_problem(config)
 
     print("=== Plate with Hole FEM Result ===")
+    print(f"mesh strategy:      {config.mesh_strategy}")
     print(f"elements:           {result.model.mesh.total_element_number}")
     print(f"w nodes:            {result.model.mesh.total_w_node_number}")
     print(f"theta nodes:        {result.model.mesh.total_theta_node_number}")
