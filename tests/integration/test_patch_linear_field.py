@@ -14,7 +14,7 @@ from plate_fea.solver import solve_linear_system
 def test_linear_patch_closed_form_solution() -> None:
     """Exact linear-field patch test for the implemented heterosis element."""
     mesh = generate_rectangular_heterosis_mesh(width=2.0, height=1.0, nx=4, ny=3)
-    material = PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=0.2)
+    material = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.25, thickness=0.2)
     model = PlateModel(mesh=mesh, constitutive_material=material, element_formulation=HeterosisPlateElement())
 
     a, b, c = 0.7, -0.35, 0.15

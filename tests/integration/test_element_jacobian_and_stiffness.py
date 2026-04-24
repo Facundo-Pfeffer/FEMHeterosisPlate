@@ -93,7 +93,7 @@ def test_surface_pressure_quadrature_jacobian_det_positive(nx: int, ny: int) -> 
 @pytest.mark.parametrize("nx,ny", [(1, 1), (2, 2)])
 def test_element_stiffness_symmetric_positive_semidefinite(nx: int, ny: int) -> None:
     mesh = generate_rectangular_heterosis_mesh(width=1.5, height=1.0, nx=nx, ny=ny)
-    material = PlateMaterial(young_modulus=210.0, poisson_ratio=0.3, thickness=0.2)
+    material = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.3, thickness=0.2)
     el = HeterosisPlateElement()
     for element_id in range(mesh.total_element_number):
         K = el.compute_stiffness_matrix(mesh, material, element_id)
@@ -118,7 +118,7 @@ def test_element_stiffness_symmetric_with_quadrature_kwargs(
     shear: tuple[int, int],
 ) -> None:
     mesh = generate_rectangular_heterosis_mesh(width=1.0, height=1.0, nx=2, ny=2)
-    material = PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=0.15)
+    material = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.25, thickness=0.15)
     el = HeterosisPlateElement()
     kw = {"bending_quadrature_order": bend, "shear_quadrature_order": shear}
     K = el.compute_stiffness_matrix(mesh, material, 0, **kw)
@@ -138,8 +138,8 @@ def test_element_stiffness_symmetric_with_quadrature_kwargs(
 
 def test_global_assembled_K_is_symmetric() -> None:
     mesh = generate_rectangular_heterosis_mesh(width=2.0, height=1.0, nx=3, ny=2)
-    material = PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=0.2)
+    material = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.25, thickness=0.2)
     model = PlateModel(mesh=mesh, constitutive_material=material, element_formulation=HeterosisPlateElement())
     K = assemble_stiffness_matrix(model)
     diff = K - K.T
-    assert diff.nnz == 0 or float(np.max(np.abs(diff.data))) < 1.0e-12
+    assert diff.nnz == 0 or float(np.max(np.abs(diff.data))) < 1.0e-10

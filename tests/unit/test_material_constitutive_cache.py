@@ -8,7 +8,7 @@ from plate_fea.materials import PlateMaterial
 
 
 def test_constitutive_matrices_identical_on_repeated_access() -> None:
-    m = PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=20.0)
+    m = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.25, thickness=20.0)
     db1 = m.bending_constitutive_matrix
     db2 = m.bending_constitutive_matrix
     ds1 = m.shear_constitutive_matrix
@@ -19,7 +19,7 @@ def test_constitutive_matrices_identical_on_repeated_access() -> None:
 
 def test_constitutive_mathematics_unchanged() -> None:
     """Same formulas as the original @property implementations."""
-    m = PlateMaterial(young_modulus=200.0, poisson_ratio=0.25, thickness=20.0, shear_correction_factor=5.0 / 6.0)
+    m = PlateMaterial(young_modulus=200000.0, poisson_ratio=0.25, thickness=20.0, shear_correction_factor=5.0 / 6.0)
     nu = m.poisson_ratio
     e = m.young_modulus
     t = m.thickness
