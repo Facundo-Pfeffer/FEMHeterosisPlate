@@ -1,0 +1,19 @@
+Patch diagnostic report (distorted 5-element enclosing patch)
+
+Element naming in figure: E_top, E_left, E_center, E_right, E_bottom
+Checked fields: kappa_xx, kappa_yy, kappa_xy, gamma_xz, gamma_yz
+Sampling: all elements, 3x3 quadrature points per element
+
+kappa_xx: expected=+0.13000000, min=+0.13000000, max=+0.13000000, spread=1.110e-15, max|err|=5.551e-16
+kappa_yy: expected=+0.17000000, min=+0.17000000, max=+0.17000000, spread=8.882e-16, max|err|=5.274e-16
+kappa_xy: expected=-0.42000000, min=-0.42000000, max=-0.42000000, spread=1.610e-15, max|err|=8.327e-16
+gamma_xz: expected=+0.19000000, min=+0.14291712, max=+0.23699923, spread=9.408e-02, max|err|=4.708e-02
+gamma_yz: expected=-0.11000000, min=-0.17276894, max=-0.04696990, spread=1.258e-01, max|err|=6.303e-02
+
+Access chain used in test:
+- local_dofs = HeterosisPlateElement.local_to_global_dof_indices(mesh, element_id)
+- u_local = u[local_dofs]
+- kappa = HeterosisPlateElement.bending_B_matrix(...) @ u_local
+- gamma = HeterosisPlateElement.shear_B_matrix(...) @ u_local
+
+Generated figure: patch_geometry_5element_distorted.png

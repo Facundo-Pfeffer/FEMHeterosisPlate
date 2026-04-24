@@ -2,6 +2,8 @@
 
 Finite element implementation of a shear-deformable isotropic plate solver based on a heterosis quadrilateral element.
 
+Documentation is organized under `docs/` (see `docs/README.md`).
+
 Current element/model choices:
 - Q8 interpolation for transverse displacement `w`
 - Q9 interpolation for rotations `theta_x`, `theta_y`
@@ -84,11 +86,6 @@ src/plate_fea/
 ├── problem_orchestrator.py     # high-level solve workflows
 ├── quadrature.py               # Gauss rules (cached)
 ├── solver.py                   # constrained sparse solve
-├── patch_test/                 # Ch. 11-style patch tests (Zienkiewicz et al., *FEM: Basis and Fundamentals*, 8th ed.)
-│   ├── engine.py               # Tests A/B/C, suite runner, reporting
-│   ├── plate_exact_states.py   # linear / quadratic patch fields for w, θ
-│   ├── diagnostics.py          # residual, rank, spectrum (small patches)
-│   └── …
 └── elements/
     ├── base.py                 # element interface
     └── heterosis_plate.py      # shape functions, B-matrices, local K/f
@@ -100,7 +97,6 @@ Scripts:
 scripts/
 ├── run_smoke_test.py
 ├── run_problem.py
-├── run_patch_test_chapter11.py
 ├── run_ssss_square_uniform_pressure.py
 ├── run_clamped_square_uniform_pressure.py
 ├── convergence_compare_uniform_vs_gmsh.py
@@ -116,13 +112,15 @@ Tests:
 ```text
 tests/
 ├── README.md
+├── patch_test/
+│   ├── test_five_element_patch.py
+│   └── test_single_element_eigen.py
 ├── unit/
 │   ├── test_shape_functions.py
 │   └── test_material_constitutive_cache.py
 ├── integration/
 │   ├── test_element_jacobian_and_stiffness.py
 │   ├── test_patch_linear_field.py
-│   ├── test_patch_chapter11_framework.py
 │   └── test_mesh_strategies.py
 └── validation/
     ├── test_ssss_uniform_pressure_vs_navier.py
@@ -131,11 +129,21 @@ tests/
 
 ---
 
-## Patch testing (Zienkiewicz et al., *FEM: Basis and Fundamentals*, 8th ed., Ch. 11)
+## Patch testing
 
-Documentation, notation, vocabulary, scope, and how to run the suite: **`src/plate_fea/patch_test/README.md`**.
+Current focused patch diagnostics live in **`tests/patch_test/`**.
 
-Exact linear-field patch (closed-form) regression: **`tests/integration/test_patch_linear_field.py`** — run `python -m pytest tests/integration/test_patch_linear_field.py -q`.
+Run them with:
+
+```bash
+python -m pytest tests/patch_test -q
+```
+
+Exact linear-field regression is kept in **`tests/integration/test_patch_linear_field.py`** — run:
+
+```bash
+python -m pytest tests/integration/test_patch_linear_field.py -q
+```
 
 ---
 
@@ -158,15 +166,7 @@ Pipeline:
 6. constrained solve
 7. point-of-interest deflection extraction
 
-### 5.2 Patch suite from Zienkiewicz et al. (Ch. 11; Tests A/B/C, diagnostics, quadrature)
-
-```bash
-python scripts/run_patch_test_chapter11.py
-```
-
-Use flags such as `--no-reduced-quadrature`, `--no-distorted`, `--one-linear-mode` to shorten runs. See **`src/plate_fea/patch_test/README.md`** for full scope.
-
-### 5.3 Simply supported square plate under uniform pressure (Navier check)
+### 5.2 Simply supported square plate under uniform pressure (Navier check)
 
 ```bash
 python scripts/run_ssss_square_uniform_pressure.py --nx 20 --ny 20
@@ -174,7 +174,7 @@ python scripts/run_ssss_square_uniform_pressure.py --nx 20 --ny 20
 
 SI defaults: 1 m span, 5 mm thickness, 200 GPa, uniform −10 kPa pressure. All edges pinned in translation (`w = 0`); edge moments natural. Compares FE centre deflection [m] to the Kirchhoff–Navier series (shear deformable element is slightly more flexible than thin-plate theory).
 
-### 5.4 Clamped square plate under uniform pressure (Kirchhoff β check)
+### 5.3 Clamped square plate under uniform pressure (Kirchhoff β check)
 
 ```bash
 python scripts/run_clamped_square_uniform_pressure.py --nx 20 --ny 20
