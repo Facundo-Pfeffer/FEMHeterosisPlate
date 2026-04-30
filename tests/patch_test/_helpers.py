@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -15,11 +16,55 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "output" / "integration_patch_diagnostics"
 
 
+@dataclass(frozen=True)
+class RepresentableDistortedPatchKinematicField:
+    """
+    Coefficients for a distorted-patch kinematic field representable by the
+    standard heterosis interpolation.
+
+    The prescribed transverse displacement field is linear in physical coordinates:
+
+        w(x, y) = w_x_slope * x + w_y_slope * y + w_offset
+
+    The prescribed rotation fields are linear in physical coordinates:
+
+        theta_x(x, y) =
+            curvature_xx * x
+            + 0.5 * curvature_xy * y
+            + theta_x_intercept
+
+        theta_y(x, y) =
+            0.5 * curvature_xy * x
+            + curvature_yy * y
+            + theta_y_intercept
+
+    With the shear convention used in these tests,
+
+        gamma_xz = w_,x - theta_x
+        gamma_yz = w_,y - theta_y
+
+    the bending strains are constant, while the shear strains are known functions
+    of x and y.
+    """
+
+    curvature_xx: float = 0.13
+    curvature_yy: float = 0.17
+    curvature_xy: float = -0.42
+
+    theta_x_intercept: float = 0.08
+    theta_y_intercept: float = -0.04
+
+    w_x_slope: float = 0.19
+    w_y_slope: float = -0.11
+    w_offset: float = 0.30
+
+
 def build_distorted_five_element_patch() -> HeterosisMesh:
     """
     Build a 5-element patch whose overall boundary is rectangular.
 
-    The topology is: top/left/right/bottom elements enclosing one distorted middle element.
+    The topology is: top/left/right/bottom elements enclosing one distorted
+    middle element.
     """
     node_coordinates = np.array(
         [
@@ -27,7 +72,7 @@ def build_distorted_five_element_patch() -> HeterosisMesh:
             [3.4, 0.0],  # 1  outer bottom-right
             [3.4, 3.0],  # 2  outer top-right
             [0.0, 3.0],  # 3  outer top-left
-            [1.15, 1.05],  # 4  inner bottom-left (distorted center element corner)
+            [1.15, 1.05],  # 4  inner bottom-left
             [2.28, 1.00],  # 5  inner bottom-right
             [2.20, 2.08],  # 6  inner top-right
             [1.02, 2.15],  # 7  inner top-left
@@ -62,63 +107,127 @@ def build_distorted_five_element_patch() -> HeterosisMesh:
         dtype=int,
     )
 
-    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates, w_location_matrix=w_location_matrix)
+    return HeterosisMesh.from_arrays(
+        node_coordinates=node_coordinates,
+        w_location_matrix=w_location_matrix,
+    )
 
 
 def build_distorted_single_element_mesh() -> HeterosisMesh:
     base_mesh = generate_rectangular_heterosis_mesh(width=1.0, height=1.0, nx=1, ny=1)
+
     node_coordinates = base_mesh.node_coordinates.copy()
     node_coordinates[2] += np.array([0.08, -0.05])
     node_coordinates[4] += np.array([0.06, 0.00])
     node_coordinates[5] += np.array([0.00, -0.07])
     node_coordinates[6] += np.array([-0.05, 0.00])
     node_coordinates[7] += np.array([0.00, 0.06])
-    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates, w_location_matrix=base_mesh.w_location_matrix)
+
+    return HeterosisMesh.from_arrays(
+        node_coordinates=node_coordinates,
+        w_location_matrix=base_mesh.w_location_matrix,
+    )
 
 
-def assemble_polynomial_state(mesh: HeterosisMesh, model: PlateModel) -> tuple[np.ndarray, dict[str, float]]:
-    a, b, e = 0.13, -0.21, 0.17
-    c, f = 0.08, -0.04
-    gx, gy = 0.19, -0.11
-    k0 = 0.3
+def assemble_representable_distorted_patch_displacement_vector(
+    mesh: HeterosisMesh,
+    model: PlateModel,
+    prescribed_kinematic_field: RepresentableDistortedPatchKinematicField = RepresentableDistortedPatchKinematicField(),
+) -> tuple[np.ndarray, RepresentableDistortedPatchKinematicField]:
+    """
+    Build the global displacement vector for the representable distorted-patch field.
 
-    global_displacement = np.zeros(mesh.total_dof_number, dtype=float)
-    total_w_nodes = mesh.total_w_node_number
+    Returns:
+        global_displacement_vector:
+            One-dimensional array containing all global model degrees of freedom.
+
+        prescribed_kinematic_field:
+            Coefficients used to define the analytical w, theta_x, and theta_y fields.
+    """
+    global_displacement_vector = np.zeros(mesh.total_dof_number, dtype=float)
 
     w_node_coordinates = mesh.node_coordinates
     w_x_coordinates = w_node_coordinates[:, 0]
     w_y_coordinates = w_node_coordinates[:, 1]
-    global_displacement[:total_w_nodes] = (
-        0.5 * a * w_x_coordinates * w_x_coordinates
-        + b * w_x_coordinates * w_y_coordinates
-        + 0.5 * e * w_y_coordinates * w_y_coordinates
-        + (c + gx) * w_x_coordinates
-        + (f + gy) * w_y_coordinates
-        + k0
+
+    global_displacement_vector[: mesh.total_w_node_number] = (
+        prescribed_kinematic_field.w_x_slope * w_x_coordinates
+        + prescribed_kinematic_field.w_y_slope * w_y_coordinates
+        + prescribed_kinematic_field.w_offset
     )
 
     theta_node_coordinates = mesh.theta_node_coordinates
     theta_x_coordinates = theta_node_coordinates[:, 0]
     theta_y_coordinates = theta_node_coordinates[:, 1]
-    theta_x_values = a * theta_x_coordinates + b * theta_y_coordinates + c
-    theta_y_values = b * theta_x_coordinates + e * theta_y_coordinates + f
-    for theta_node_id in range(mesh.total_theta_node_number):
-        global_displacement[model.get_theta_x_dof(theta_node_id)] = float(theta_x_values[theta_node_id])
-        global_displacement[model.get_theta_y_dof(theta_node_id)] = float(theta_y_values[theta_node_id])
 
-    expected_generalized_strains = {
-        "kappa_xx": a,
-        "kappa_yy": e,
-        "kappa_xy": 2.0 * b,
-        "gamma_xz": gx,
-        "gamma_yz": gy,
+    theta_x_values = (
+        prescribed_kinematic_field.curvature_xx * theta_x_coordinates
+        + 0.5 * prescribed_kinematic_field.curvature_xy * theta_y_coordinates
+        + prescribed_kinematic_field.theta_x_intercept
+    )
+
+    theta_y_values = (
+        0.5 * prescribed_kinematic_field.curvature_xy * theta_x_coordinates
+        + prescribed_kinematic_field.curvature_yy * theta_y_coordinates
+        + prescribed_kinematic_field.theta_y_intercept
+    )
+
+    for theta_node_id in range(mesh.total_theta_node_number):
+        global_displacement_vector[model.get_theta_x_dof(theta_node_id)] = float(theta_x_values[theta_node_id])
+        global_displacement_vector[model.get_theta_y_dof(theta_node_id)] = float(theta_y_values[theta_node_id])
+
+    return global_displacement_vector, prescribed_kinematic_field
+
+
+def evaluate_expected_distorted_patch_strains_at_sample_points(
+    sampled_strain_fields: dict[str, np.ndarray],
+    prescribed_kinematic_field: RepresentableDistortedPatchKinematicField,
+) -> dict[str, np.ndarray]:
+    """
+    Evaluate the analytical strain fields at the sampled quadrature-point coordinates.
+
+    The sampled_strain_fields dictionary must contain:
+        - "x": physical x-coordinates of sampled quadrature points.
+        - "y": physical y-coordinates of sampled quadrature points.
+    """
+    sample_x_coordinates = sampled_strain_fields["x"]
+    sample_y_coordinates = sampled_strain_fields["y"]
+
+    theta_x_at_sample_points = (
+        prescribed_kinematic_field.curvature_xx * sample_x_coordinates
+        + 0.5 * prescribed_kinematic_field.curvature_xy * sample_y_coordinates
+        + prescribed_kinematic_field.theta_x_intercept
+    )
+
+    theta_y_at_sample_points = (
+        0.5 * prescribed_kinematic_field.curvature_xy * sample_x_coordinates
+        + prescribed_kinematic_field.curvature_yy * sample_y_coordinates
+        + prescribed_kinematic_field.theta_y_intercept
+    )
+
+    return {
+        "kappa_xx": np.full_like(sample_x_coordinates, prescribed_kinematic_field.curvature_xx),
+        "kappa_yy": np.full_like(sample_x_coordinates, prescribed_kinematic_field.curvature_yy),
+        "kappa_xy": np.full_like(sample_x_coordinates, prescribed_kinematic_field.curvature_xy),
+        "gamma_xz": prescribed_kinematic_field.w_x_slope - theta_x_at_sample_points,
+        "gamma_yz": prescribed_kinematic_field.w_y_slope - theta_y_at_sample_points,
     }
-    return global_displacement, expected_generalized_strains
 
 
 def compute_generalized_strains_at_quadrature_points(
-    mesh: HeterosisMesh, model: PlateModel, u: np.ndarray
+    mesh: HeterosisMesh,
+    model: PlateModel,
+    global_displacement_vector: np.ndarray,
 ) -> dict[str, np.ndarray]:
+    """
+    Evaluate generalized strain fields at all 3x3 quadrature points of every element.
+
+    Returns:
+        Dictionary containing:
+            - "x", "y": physical coordinates of each sampled point.
+            - "kappa_xx", "kappa_yy", "kappa_xy": bending strain samples.
+            - "gamma_xz", "gamma_yz": shear strain samples.
+    """
     element = HeterosisPlateElement()
     quadrature_points = tensor_product_rule(order_x=3, order_y=3).points
 
@@ -131,29 +240,49 @@ def compute_generalized_strains_at_quadrature_points(
         "gamma_xz": [],
         "gamma_yz": [],
     }
+
     for element_id in range(mesh.total_element_number):
         element_geometry_coordinates = mesh.get_geometry_coordinates(element_id)
         element_global_dof_indices = element.local_to_global_dof_indices(mesh, element_id)
-        element_displacement = u[element_global_dof_indices]
+        element_displacement_vector = global_displacement_vector[element_global_dof_indices]
+
         for parent_point in quadrature_points:
             xi = float(parent_point[0])
             eta = float(parent_point[1])
-            geometry_jacobian = element.geometry_jacobian(xi, eta, element_geometry_coordinates)
+
+            geometry_jacobian = element.geometry_jacobian(
+                xi,
+                eta,
+                element_geometry_coordinates,
+            )
 
             q8_shape_values = element.q8_shape_functions(xi, eta)
-            x_quadrature = float(q8_shape_values @ element_geometry_coordinates[:, 0])
-            y_quadrature = float(q8_shape_values @ element_geometry_coordinates[:, 1])
-            sampled_fields["x"].append(x_quadrature)
-            sampled_fields["y"].append(y_quadrature)
+            x_sample_coordinate = float(q8_shape_values @ element_geometry_coordinates[:, 0])
+            y_sample_coordinate = float(q8_shape_values @ element_geometry_coordinates[:, 1])
+
+            sampled_fields["x"].append(x_sample_coordinate)
+            sampled_fields["y"].append(y_sample_coordinate)
 
             d_q9_dxi, d_q9_deta = element.q9_shape_function_gradients_parent(xi, eta)
-            d_q9_dx, d_q9_dy = element.parent_to_physical_gradients(d_q9_dxi, d_q9_deta, geometry_jacobian)
-            bending_strain = element.bending_B_matrix(d_q9_dx, d_q9_dy) @ element_displacement
+            d_q9_dx, d_q9_dy = element.parent_to_physical_gradients(
+                d_q9_dxi,
+                d_q9_deta,
+                geometry_jacobian,
+            )
+            bending_strain = element.bending_B_matrix(d_q9_dx, d_q9_dy) @ element_displacement_vector
 
             d_q8_dxi, d_q8_deta = element.q8_shape_function_gradients_parent(xi, eta)
-            d_q8_dx, d_q8_dy = element.parent_to_physical_gradients(d_q8_dxi, d_q8_deta, geometry_jacobian)
+            d_q8_dx, d_q8_dy = element.parent_to_physical_gradients(
+                d_q8_dxi,
+                d_q8_deta,
+                geometry_jacobian,
+            )
             q9_shape_values = element.q9_shape_functions(xi, eta)
-            shear_strain = element.shear_B_matrix(d_q8_dx, d_q8_dy, q9_shape_values) @ element_displacement
+            shear_strain = element.shear_B_matrix(
+                d_q8_dx,
+                d_q8_dy,
+                q9_shape_values,
+            ) @ element_displacement_vector
 
             sampled_fields["kappa_xx"].append(float(bending_strain[0]))
             sampled_fields["kappa_yy"].append(float(bending_strain[1]))
@@ -161,14 +290,19 @@ def compute_generalized_strains_at_quadrature_points(
             sampled_fields["gamma_xz"].append(float(shear_strain[0]))
             sampled_fields["gamma_yz"].append(float(shear_strain[1]))
 
-    return {field_name: np.asarray(field_values, dtype=float) for field_name, field_values in sampled_fields.items()}
+    return {
+        field_name: np.asarray(field_values, dtype=float)
+        for field_name, field_values in sampled_fields.items()
+    }
 
 
 def plot_patch_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
     path = outdir / "patch_geometry_5element_distorted.png"
+
     fig, ax = plt.subplots(figsize=(6, 6))
     node_coordinates = mesh.node_coordinates
     w_location_matrix = mesh.w_location_matrix
+
     edges = ((0, 4), (4, 1), (1, 5), (5, 2), (2, 6), (6, 3), (3, 7), (7, 0))
     labels = {
         0: r"$E_{\mathrm{top}}$",
@@ -177,17 +311,18 @@ def plot_patch_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
         3: r"$E_{\mathrm{right}}$",
         4: r"$E_{\mathrm{bottom}}$",
     }
-    # Keep semantic labels near their element centers with explicit per-element offsets.
     label_offsets_by_element = {
-        0: (0.00, 0.18),  # E_top
-        1: (-0.22, 0.00),  # E_left
-        2: (-0.10, -0.10),  # E_center (away from center Q9 marker)
-        3: (0.22, 0.00),  # E_right
-        4: (0.00, -0.18),  # E_bottom
+        0: (0.00, 0.18),
+        1: (-0.22, 0.00),
+        2: (-0.10, -0.10),
+        3: (0.22, 0.00),
+        4: (0.00, -0.18),
     }
+
     for element_id in range(w_location_matrix.shape[1]):
         element_node_ids = w_location_matrix[:, element_id]
         element_node_coordinates = node_coordinates[element_node_ids]
+
         for i, j in edges:
             ax.plot(
                 [element_node_coordinates[i, 0], element_node_coordinates[j, 0]],
@@ -195,18 +330,21 @@ def plot_patch_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
                 "k-",
                 lw=1.4,
             )
-        cx = float(np.mean(element_node_coordinates[:, 0]))
-        cy = float(np.mean(element_node_coordinates[:, 1]))
-        dx, dy = label_offsets_by_element[element_id]
+
+        center_x = float(np.mean(element_node_coordinates[:, 0]))
+        center_y = float(np.mean(element_node_coordinates[:, 1]))
+        offset_x, offset_y = label_offsets_by_element[element_id]
+
         ax.text(
-            cx + dx,
-            cy + dy,
+            center_x + offset_x,
+            center_y + offset_y,
             labels[element_id],
             fontsize=10,
             ha="center",
             va="center",
             color="black",
         )
+
     ax.scatter(
         node_coordinates[:, 0],
         node_coordinates[:, 1],
@@ -215,49 +353,77 @@ def plot_patch_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
         zorder=3,
         label="Q8 and Q9 element nodes",
     )
+
     q9_center_theta_ids = np.unique(mesh.theta_location_matrix[8, :])
-    q9_center_xy = mesh.theta_node_coordinates[q9_center_theta_ids, :]
+    q9_center_coordinates = mesh.theta_node_coordinates[q9_center_theta_ids, :]
+
     ax.scatter(
-        q9_center_xy[:, 0],
-        q9_center_xy[:, 1],
+        q9_center_coordinates[:, 0],
+        q9_center_coordinates[:, 1],
         s=20,
         c="tab:blue",
         marker="o",
         edgecolors="white",
         linewidths=0.6,
         zorder=4,
-        label="Q9 center nodes.",
+        label="Q9 center nodes",
     )
+
     ax.set_xlabel("x (unitless)")
     ax.set_ylabel("y (unitless)")
     ax.set_aspect("equal", "box")
     ax.grid(alpha=0.2)
-    # Use a figure-level legend strip below the title (outside axes) to prevent overlaps.
-    handles, labels_text = ax.get_legend_handles_labels()
-    fig.legend(handles, labels_text, loc="upper center", bbox_to_anchor=(0.5, 0.93), ncol=2, frameon=True)
+
+    handles, label_text = ax.get_legend_handles_labels()
+    fig.legend(
+        handles,
+        label_text,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.93),
+        ncol=2,
+        frameon=True,
+    )
+
     fig.suptitle("Distorted 5-element patch (enclosing topology)", y=0.98)
     fig.tight_layout(rect=[0.0, 0.04, 1.0, 0.88])
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
     return path
 
 
-def plot_field_maps(samples: dict[str, np.ndarray], expected: dict[str, float], outdir: Path) -> Path:
+def plot_field_maps(
+    sampled_strain_fields: dict[str, np.ndarray],
+    expected_strain_fields: dict[str, np.ndarray],
+    outdir: Path,
+) -> Path:
     path = outdir / "strain_fields_component_maps.png"
-    x_coordinates = samples["x"]
-    y_coordinates = samples["y"]
-    fields = ("kappa_xx", "kappa_yy", "kappa_xy", "gamma_xz", "gamma_yz")
+
+    x_coordinates = sampled_strain_fields["x"]
+    y_coordinates = sampled_strain_fields["y"]
+    strain_field_names = ("kappa_xx", "kappa_yy", "kappa_xy", "gamma_xz", "gamma_yz")
 
     fig, axs = plt.subplots(2, 3, figsize=(14, 8))
     axs_flat = axs.flatten()
-    for field_index, field_name in enumerate(fields):
+
+    for field_index, strain_field_name in enumerate(strain_field_names):
         ax = axs_flat[field_index]
-        field_values = samples[field_name]
-        contour = ax.tricontourf(x_coordinates, y_coordinates, field_values, levels=18, cmap="viridis")
+        sampled_values = sampled_strain_fields[strain_field_name]
+        expected_values = expected_strain_fields[strain_field_name]
+
+        contour = ax.tricontourf(
+            x_coordinates,
+            y_coordinates,
+            sampled_values,
+            levels=18,
+            cmap="viridis",
+        )
         fig.colorbar(contour, ax=ax, shrink=0.85)
-        spread = float(np.max(field_values) - np.min(field_values))
-        max_abs_error = float(np.max(np.abs(field_values - expected[field_name])))
-        ax.set_title(f"{field_name}\nspread={spread:.3e}, max|err|={max_abs_error:.3e}")
+
+        spread = float(np.max(sampled_values) - np.min(sampled_values))
+        max_abs_error = float(np.max(np.abs(sampled_values - expected_values)))
+
+        ax.set_title(f"{strain_field_name}\nspread={spread:.3e}, max|err|={max_abs_error:.3e}")
         ax.set_aspect("equal", "box")
         ax.grid(alpha=0.15)
 
@@ -275,32 +441,38 @@ def plot_field_maps(samples: dict[str, np.ndarray], expected: dict[str, float], 
         family="monospace",
         fontsize=10,
     )
+
     fig.suptitle("Five strain fields sampled component-wise on distorted patch", y=0.98)
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
     return path
 
 
 def plot_eigenvalues(eigenvalues: np.ndarray, near_zero_count: int, outdir: Path) -> Path:
     path = outdir / "distorted_single_element_eigenvalues.png"
+
     fig, ax = plt.subplots(figsize=(7, 4))
     eigenvalue_indices = np.arange(1, eigenvalues.size + 1)
     clipped_eigenvalues = np.clip(eigenvalues, 1.0e-18, None)
+
     ax.semilogy(eigenvalue_indices, clipped_eigenvalues, "o-", lw=1.3, ms=4)
     ax.set_xlabel("Eigenvalue index")
     ax.set_ylabel("eigenvalue (log scale)")
     ax.set_title(f"Unsupported distorted element spectrum (near-zero count: {near_zero_count})")
     ax.grid(alpha=0.25, which="both")
+
     fig.tight_layout()
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
     return path
 
 
 def plot_single_element_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
-    """Plot the distorted single element with the same node style as patch geometry."""
     path = outdir / "distorted_single_element_geometry.png"
+
     fig, ax = plt.subplots(figsize=(6, 6))
     node_coordinates = mesh.node_coordinates
     element_node_ids = mesh.w_location_matrix[:, 0]
@@ -315,9 +487,18 @@ def plot_single_element_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
             lw=1.4,
         )
 
-    cx = float(np.mean(element_node_coordinates[:, 0]))
-    cy = float(np.mean(element_node_coordinates[:, 1]))
-    ax.text(cx - 0.08, cy - 0.08, r"$E_{\mathrm{single}}$", fontsize=10, ha="center", va="center", color="black")
+    center_x = float(np.mean(element_node_coordinates[:, 0]))
+    center_y = float(np.mean(element_node_coordinates[:, 1]))
+
+    ax.text(
+        center_x - 0.08,
+        center_y - 0.08,
+        r"$E_{\mathrm{single}}$",
+        fontsize=10,
+        ha="center",
+        va="center",
+        color="black",
+    )
 
     ax.scatter(
         node_coordinates[:, 0],
@@ -327,28 +508,40 @@ def plot_single_element_geometry(mesh: HeterosisMesh, outdir: Path) -> Path:
         zorder=3,
         label="Q8 and Q9 element nodes",
     )
+
     q9_center_theta_ids = np.unique(mesh.theta_location_matrix[8, :])
-    q9_center_xy = mesh.theta_node_coordinates[q9_center_theta_ids, :]
+    q9_center_coordinates = mesh.theta_node_coordinates[q9_center_theta_ids, :]
+
     ax.scatter(
-        q9_center_xy[:, 0],
-        q9_center_xy[:, 1],
+        q9_center_coordinates[:, 0],
+        q9_center_coordinates[:, 1],
         s=20,
         c="tab:blue",
         marker="o",
         edgecolors="white",
         linewidths=0.6,
         zorder=4,
-        label="Q9 center nodes.",
+        label="Q9 center nodes",
     )
 
     ax.set_xlabel("x (unitless)")
     ax.set_ylabel("y (unitless)")
     ax.set_aspect("equal", "box")
     ax.grid(alpha=0.2)
-    handles, labels_text = ax.get_legend_handles_labels()
-    fig.legend(handles, labels_text, loc="upper center", bbox_to_anchor=(0.5, 0.93), ncol=2, frameon=True)
+
+    handles, label_text = ax.get_legend_handles_labels()
+    fig.legend(
+        handles,
+        label_text,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.93),
+        ncol=2,
+        frameon=True,
+    )
+
     fig.suptitle("Distorted single-element geometry", y=0.98)
     fig.tight_layout(rect=[0.0, 0.04, 1.0, 0.88])
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
     return path
