@@ -16,14 +16,14 @@ The objective is to use this plate element to determine the **transverse deflect
 - Overall plate dimensions: `500 mm × 300 mm`
 - Centered rectangular cut-out: `250 mm × 180 mm`
 - Thickness: `20 mm`
-- Young's modulus: `E = 200 N/mm^2`
+- Young's modulus: `E = 200000 N/mm^2`
 - Poisson's ratio: `ν = 0.25`
 - Applied shear: `1 kN/mm`
 
 ## Boundary conditions
 
-- The top and bottom outer edges are **free**
-- The left and right outer edges are **clamped**
+- The right and bottom outer edges are **free**
+- The left and top outer edges are **clamped**
 - The cut-out is centered, as indicated in the figure
 - Point `A` is the point at which the transverse deflection must be computed
 

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from plate_fea.assembly import assemble_force_vector, assemble_stiffness_matrix
 from plate_fea.boundary_conditions import EssentialBoundaryCondition
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
 from plate_fea.model import PlateModel
-from plate_fea.solver import solve_linear_system
+from plate_fea.solver import solve_displacement_system
 
 
 def test_linear_patch_closed_form_solution() -> None:
@@ -31,15 +30,12 @@ def test_linear_patch_closed_form_solution() -> None:
         model.add_essential_condition(EssentialBoundaryCondition(field_name="theta_x", node_ids=[node_id], value=a))
         model.add_essential_condition(EssentialBoundaryCondition(field_name="theta_y", node_ids=[node_id], value=b))
 
-    K = assemble_stiffness_matrix(model)
-    F = assemble_force_vector(model)
-    bc_ess, bc_val = model.build_essential_boundary_arrays()
-    u = solve_linear_system(K, F, bc_ess, bc_val)
+    _, _, displacement = solve_displacement_system(model)
 
     n_w = mesh.total_w_node_number
-    w_num = u[:n_w]
-    theta_x_num = u[n_w::2]
-    theta_y_num = u[n_w + 1 :: 2]
+    w_num = displacement[:n_w]
+    theta_x_num = displacement[n_w::2]
+    theta_y_num = displacement[n_w + 1 :: 2]
 
     assert np.max(np.abs(w_num - w_exact)) < 1.0e-8
     assert np.max(np.abs(theta_x_num - a)) < 1.0e-8

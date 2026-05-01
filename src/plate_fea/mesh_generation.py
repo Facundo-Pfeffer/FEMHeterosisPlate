@@ -1,4 +1,19 @@
-"""Heterosis mesh generators (Q8 displacement + Q9 rotation interpolation)."""
+"""
+Mesh generators for the Heterosis plate finite element.
+
+For a plain rectangle:
+    generate_rectangular_heterosis_mesh(width, height, nx, ny)
+
+For the plate-with-hole benchmark, the main choices are:
+    UniformBufferRingQ8Generator      — structured, uniform spacing, recommended default
+    GmshBoundarySensitiveQ8Generator  — unstructured, distance-field sizing (requires gmsh)
+
+Geometry is described by PlateWithHoleGeometry (outer dimensions + hole dimensions).
+All generator classes implement a .generate() -> HeterosisMesh method.
+Interior-warping generators (WarpedInteriorQ8Generator, FocusedWarpedInteriorQ8Generator,
+TargetAwareWarpedQ8Generator) apply coordinate mappings to any base mesh to increase
+element distortion, used for robustness and convergence studies.
+"""
 
 from __future__ import annotations
 
@@ -927,6 +942,70 @@ def generate_rectangular_heterosis_mesh(width: float, height: float, nx: int, ny
     node_coordinates_arr = np.asarray(node_coordinates, dtype=float)
     w_location_matrix = np.asarray(elements, dtype=int).T
     return HeterosisMesh.from_arrays(node_coordinates=node_coordinates_arr, w_location_matrix=w_location_matrix)
+
+
+def generate_quarter_circle_heterosis_mesh(R: float, n_el: int) -> HeterosisMesh:
+    """
+    Structured Q8 mesh for a quarter-circle disc (x ≥ 0, y ≥ 0) of radius R.
+
+    Topology: n_el × n_el elements on a polar grid.
+    The inner boundary sits at r_min = R / (4 * n_el) so the innermost ring of
+    elements is non-degenerate. As n_el increases r_min → 0 and the mesh
+    converges to the full disc.
+
+    Node ordering follows the same Q8 convention as the rectangular mesh:
+    counter-clockwise, starting from the inner/low-angle corner.
+
+        3 ── 6 ── 2      (inner=low-r, outer=high-r,
+        │          │       left=low-θ, right=high-θ)
+        7          5
+        │          │
+        0 ── 4 ── 1
+    """
+    if R <= 0.0:
+        raise ValueError("R must be positive.")
+    if n_el < 1:
+        raise ValueError("n_el must be >= 1.")
+
+    r_min = R / (4.0 * n_el)
+    r_values     = np.linspace(r_min, R,         2 * n_el + 1)
+    theta_values = np.linspace(0.0,   np.pi / 2, 2 * n_el + 1)
+
+    # Build all Q8 node positions.  Skip element-centre positions (i odd AND j odd);
+    # those are not part of the Q8 serendipity layout.
+    node_id_map: dict[tuple[int, int], int] = {}
+    node_coords: list[list[float]] = []
+    for i in range(2 * n_el + 1):
+        for j in range(2 * n_el + 1):
+            if i % 2 == 1 and j % 2 == 1:
+                continue
+            r     = float(r_values[i])
+            theta = float(theta_values[j])
+            node_id_map[(i, j)] = len(node_coords)
+            node_coords.append([r * np.cos(theta), r * np.sin(theta)])
+
+    elements: list[list[int]] = []
+    for er in range(n_el):      # radial element index
+        for ea in range(n_el):  # angular element index
+            i0, j0 = 2 * er, 2 * ea
+            local_keys = [
+                (i0,     j0    ),   # 0: inner, low θ
+                (i0 + 2, j0    ),   # 1: outer, low θ
+                (i0 + 2, j0 + 2),   # 2: outer, high θ
+                (i0,     j0 + 2),   # 3: inner, high θ
+                (i0 + 1, j0    ),   # 4: mid-radial, low θ  side
+                (i0 + 2, j0 + 1),   # 5: mid-angular, outer side
+                (i0 + 1, j0 + 2),   # 6: mid-radial, high θ side
+                (i0,     j0 + 1),   # 7: mid-angular, inner side
+            ]
+            elements.append([node_id_map[k] for k in local_keys])
+
+    node_coordinates  = np.asarray(node_coords, dtype=float)
+    w_location_matrix = np.asarray(elements,    dtype=int).T
+    return HeterosisMesh.from_arrays(
+        node_coordinates=node_coordinates,
+        w_location_matrix=w_location_matrix,
+    )
 
 
 def generate_rectangular_q8_mesh(width: float, height: float, nx: int, ny: int) -> HeterosisMesh:

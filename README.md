@@ -76,19 +76,19 @@ So:
 
 ```text
 src/plate_fea/
-├── __init__.py
-├── assembly.py                 # global K and F assembly
-├── boundary_conditions.py      # BC/load dataclasses
-├── materials.py                # PlateMaterial, constitutive matrices
-├── mesh.py                     # HeterosisMesh data model + node queries
-├── mesh_generation.py          # assignment and benchmark mesh generators
-├── model.py                    # PlateModel and global dof helpers
-├── problem_orchestrator.py     # high-level solve workflows
-├── quadrature.py               # Gauss rules (cached)
-├── solver.py                   # constrained sparse solve
+├── __init__.py                 # package entry point — exports full public API, see module map inside
+├── assembly.py                 # assemble_stiffness_matrix, assemble_force_vector
+├── boundary_conditions.py      # EssentialBoundaryCondition, ElementEdgeLineLoad, ElementSurfaceLoad
+├── materials.py                # PlateMaterial — precomputes D_b (3×3) and D_s (2×2)
+├── mesh.py                     # HeterosisMesh — Q8/Q9 two-level node layout
+├── mesh_generation.py          # mesh generators for rectangles and plate-with-hole geometry
+├── model.py                    # PlateModel — collects mesh + material + element + BCs + loads
+├── problem_orchestrator.py     # solve_plate_problem, ProblemConfig — high-level drivers
+├── quadrature.py               # gauss_legendre_1d, tensor_product_rule (lru_cache)
+├── solver.py                   # solve_linear_system, solve_displacement_system
 └── elements/
-    ├── base.py                 # element interface
-    └── heterosis_plate.py      # shape functions, B-matrices, local K/f
+    ├── base.py                 # PlateElementBase — abstract element interface
+    └── heterosis_plate.py      # HeterosisPlateElement — shape functions, B-matrices, local K/f
 ```
 
 Scripts:
@@ -131,15 +131,17 @@ tests/
 
 ## Patch testing
 
-Current focused patch diagnostics live in **`tests/patch_test/`**.
+Focused patch diagnostics live in **`tests/patch_test/`** (see `tests/patch_test/README.md`).
 
-Run them with:
+- `test_five_element_patch.py` — verifies strain accuracy on a distorted 5-element patch using a
+  representable linear kinematic field; all five strain components must match analytical values to 1e-10.
+- `test_single_element_eigen.py` — checks that a distorted single element has exactly 3 near-zero eigenvalues.
 
 ```bash
 python -m pytest tests/patch_test -q
 ```
 
-Exact linear-field regression is kept in **`tests/integration/test_patch_linear_field.py`** — run:
+Exact linear-field regression is in **`tests/integration/test_patch_linear_field.py`**:
 
 ```bash
 python -m pytest tests/integration/test_patch_linear_field.py -q
@@ -159,12 +161,13 @@ python scripts/run_problem.py --resolution 2 --hole-refine 2 --buffer 30
 
 Pipeline:
 1. mesh generation (`UniformBufferRingQ8Generator`)
-2. model/material/element setup
-3. boundary conditions
-4. line loads
-5. assembly (`K`, `F`)
-6. constrained solve
-7. point-of-interest deflection extraction
+2. model/material/element setup (`PlateModel`, `PlateMaterial`, `HeterosisPlateElement`)
+3. boundary conditions (`EssentialBoundaryCondition`)
+4. line loads (`ElementEdgeLineLoad`)
+5. assembly and solve (`solve_displacement_system`)
+6. point-of-interest deflection extraction
+
+For manual control of individual steps, use `assemble_stiffness_matrix`, `assemble_force_vector`, and `solve_linear_system` directly (all imported from `plate_fea`).
 
 ### 5.2 Simply supported square plate under uniform pressure (Navier check)
 

@@ -17,6 +17,60 @@ OUTPUT_DIR = REPO_ROOT / "output" / "integration_patch_diagnostics"
 
 
 @dataclass(frozen=True)
+class ConstantShearKinematicField:
+    """
+    Kinematic field with constant shear strains and zero bending strains.
+
+    w(x, y)  = w_x_slope * x + w_y_slope * y + w_offset  (linear)
+    theta_x  = theta_x_value                              (constant everywhere)
+    theta_y  = theta_y_value                              (constant everywhere)
+
+    Implied strains:
+        gamma_xz = w_x_slope - theta_x_value  (constant)
+        gamma_yz = w_y_slope - theta_y_value  (constant)
+        kappa_xx = kappa_yy = kappa_xy = 0    (constant theta → zero gradients)
+    """
+
+    w_x_slope: float = 0.15
+    w_y_slope: float = -0.08
+    w_offset: float = 0.20
+    theta_x_value: float = 0.05
+    theta_y_value: float = -0.12
+
+    @property
+    def gamma_xz(self) -> float:
+        return self.w_x_slope - self.theta_x_value
+
+    @property
+    def gamma_yz(self) -> float:
+        return self.w_y_slope - self.theta_y_value
+
+
+@dataclass(frozen=True)
+class ConstantKappaKinematicField:
+    """
+    Kinematic field with constant bending strains and w = 0.
+
+    theta_x(x, y) = kappa_xx * x + 0.5 * kappa_xy * y + theta_x_intercept
+    theta_y(x, y) = 0.5 * kappa_xy * x + kappa_yy * y + theta_y_intercept
+    w(x, y)       = 0
+
+    Implied bending strains (constant):
+        kappa_xx = kappa_xx
+        kappa_yy = kappa_yy
+        kappa_xy = kappa_xy
+
+    Shear strains are non-constant (gamma = -theta) and not checked by this field.
+    """
+
+    kappa_xx: float = 0.13
+    kappa_yy: float = 0.17
+    kappa_xy: float = -0.42
+    theta_x_intercept: float = 0.0
+    theta_y_intercept: float = 0.0
+
+
+@dataclass(frozen=True)
 class RepresentableDistortedPatchKinematicField:
     """
     Coefficients for a distorted-patch kinematic field representable by the
@@ -214,13 +268,85 @@ def evaluate_expected_distorted_patch_strains_at_sample_points(
     }
 
 
+def assemble_constant_shear_patch_displacement_vector(
+    mesh: HeterosisMesh,
+    model: PlateModel,
+    field: ConstantShearKinematicField = ConstantShearKinematicField(),
+) -> tuple[np.ndarray, ConstantShearKinematicField]:
+    """Build the global displacement vector for a constant-shear field (w linear, θ constant)."""
+    displacement = np.zeros(mesh.total_dof_number, dtype=float)
+
+    x = mesh.node_coordinates[:, 0]
+    y = mesh.node_coordinates[:, 1]
+    displacement[:mesh.total_w_node_number] = field.w_x_slope * x + field.w_y_slope * y + field.w_offset
+
+    for theta_node_id in range(mesh.total_theta_node_number):
+        displacement[model.get_theta_x_dof(theta_node_id)] = field.theta_x_value
+        displacement[model.get_theta_y_dof(theta_node_id)] = field.theta_y_value
+
+    return displacement, field
+
+
+def assemble_constant_kappa_patch_displacement_vector(
+    mesh: HeterosisMesh,
+    model: PlateModel,
+    field: ConstantKappaKinematicField = ConstantKappaKinematicField(),
+) -> tuple[np.ndarray, ConstantKappaKinematicField]:
+    """Build the global displacement vector for a constant-kappa field (θ linear, w = 0)."""
+    displacement = np.zeros(mesh.total_dof_number, dtype=float)
+
+    tx = mesh.theta_node_coordinates[:, 0]
+    ty = mesh.theta_node_coordinates[:, 1]
+    theta_x_values = field.kappa_xx * tx + 0.5 * field.kappa_xy * ty + field.theta_x_intercept
+    theta_y_values = 0.5 * field.kappa_xy * tx + field.kappa_yy * ty + field.theta_y_intercept
+
+    for theta_node_id in range(mesh.total_theta_node_number):
+        displacement[model.get_theta_x_dof(theta_node_id)] = float(theta_x_values[theta_node_id])
+        displacement[model.get_theta_y_dof(theta_node_id)] = float(theta_y_values[theta_node_id])
+
+    return displacement, field
+
+
+def evaluate_expected_constant_shear_strains(
+    sampled: dict[str, np.ndarray],
+    field: ConstantShearKinematicField,
+) -> dict[str, np.ndarray]:
+    """Analytical strains for the constant-shear field at the sampled quadrature coordinates."""
+    n = len(sampled["x"])
+    return {
+        "kappa_xx": np.zeros(n),
+        "kappa_yy": np.zeros(n),
+        "kappa_xy": np.zeros(n),
+        "gamma_xz": np.full(n, field.gamma_xz),
+        "gamma_yz": np.full(n, field.gamma_yz),
+    }
+
+
+def evaluate_expected_constant_kappa_strains(
+    sampled: dict[str, np.ndarray],
+    field: ConstantKappaKinematicField,
+) -> dict[str, np.ndarray]:
+    """Analytical bending strains for the constant-kappa field at the sampled quadrature coordinates."""
+    n = len(sampled["x"])
+    return {
+        "kappa_xx": np.full(n, field.kappa_xx),
+        "kappa_yy": np.full(n, field.kappa_yy),
+        "kappa_xy": np.full(n, field.kappa_xy),
+    }
+
+
 def compute_generalized_strains_at_quadrature_points(
     mesh: HeterosisMesh,
     model: PlateModel,
     global_displacement_vector: np.ndarray,
+    quadrature_order: tuple[int, int] = (3, 3),
 ) -> dict[str, np.ndarray]:
     """
-    Evaluate generalized strain fields at all 3x3 quadrature points of every element.
+    Evaluate generalized strain fields at all quadrature points of every element.
+
+    quadrature_order controls the sampling grid:
+      (3, 3) — bending integration points (default, matches the 3×3 bending rule)
+      (2, 2) — shear integration points   (matches the 2×2 selective shear rule)
 
     Returns:
         Dictionary containing:
@@ -229,7 +355,7 @@ def compute_generalized_strains_at_quadrature_points(
             - "gamma_xz", "gamma_yz": shear strain samples.
     """
     element = HeterosisPlateElement()
-    quadrature_points = tensor_product_rule(order_x=3, order_y=3).points
+    quadrature_points = tensor_product_rule(order_x=quadrature_order[0], order_y=quadrature_order[1]).points
 
     sampled_fields: dict[str, list[float]] = {
         "x": [],
@@ -448,6 +574,58 @@ def plot_field_maps(
     plt.close(fig)
 
     return path
+
+
+_STRAIN_FIELD_NAMES = ("kappa_xx", "kappa_yy", "kappa_xy", "gamma_xz", "gamma_yz")
+
+
+def build_distorted_patch_strain_report_lines(
+    *,
+    prescribed_kinematic_field: RepresentableDistortedPatchKinematicField,
+    sampled_strain_fields: dict[str, np.ndarray],
+    expected_strain_fields: dict[str, np.ndarray],
+    geometry_plot_path: Path,
+    strain_field_plot_path: Path,
+) -> list[str]:
+    """Build the diagnostic text report for the distorted-patch strain test."""
+    field = prescribed_kinematic_field
+    report_lines = [
+        "Patch diagnostic report (distorted 5-element enclosing patch)",
+        "",
+        "Element naming in figure: E_top, E_left, E_center, E_right, E_bottom",
+        "Checked fields: kappa_xx, kappa_yy, kappa_xy, gamma_xz, gamma_yz",
+        "Sampling: all elements, 3x3 quadrature points per element",
+        "",
+        "Prescribed representable field:",
+        f"  w(x, y)       = {field.w_x_slope:+.8f} x  {field.w_y_slope:+.8f} y  {field.w_offset:+.8f}",
+        f"  theta_x(x, y) = {field.curvature_xx:+.8f} x  {0.5 * field.curvature_xy:+.8f} y  {field.theta_x_intercept:+.8f}",
+        f"  theta_y(x, y) = {0.5 * field.curvature_xy:+.8f} x  {field.curvature_yy:+.8f} y  {field.theta_y_intercept:+.8f}",
+        "",
+        "Expected strain fields:",
+        "  kappa_xx, kappa_yy, kappa_xy are constant (linear theta).",
+        "  gamma_xz = w_,x - theta_x(x, y),  gamma_yz = w_,y - theta_y(x, y)  (evaluated per sample point).",
+        "",
+    ]
+
+    for name in _STRAIN_FIELD_NAMES:
+        sampled = sampled_strain_fields[name]
+        expected = expected_strain_fields[name]
+        max_abs_error = float(np.max(np.abs(sampled - expected)))
+        report_lines.append(
+            f"  {name}: "
+            f"expected=[{expected.min():+.8f}, {expected.max():+.8f}]  "
+            f"sampled=[{sampled.min():+.8f}, {sampled.max():+.8f}]  "
+            f"max|err|={max_abs_error:.3e}"
+        )
+
+    report_lines.extend(
+        [
+            "",
+            f"Generated geometry figure:     {geometry_plot_path.name}",
+            f"Generated strain-field figure: {strain_field_plot_path.name}",
+        ]
+    )
+    return report_lines
 
 
 def plot_eigenvalues(eigenvalues: np.ndarray, near_zero_count: int, outdir: Path) -> Path:

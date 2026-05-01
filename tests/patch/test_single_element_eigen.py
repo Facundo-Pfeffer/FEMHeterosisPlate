@@ -7,7 +7,7 @@ import pytest
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 
-from tests.patch_test._helpers import (
+from ._helpers import (
     OUTPUT_DIR,
     build_distorted_single_element_mesh,
     plot_eigenvalues,
@@ -15,7 +15,7 @@ from tests.patch_test._helpers import (
 )
 
 matplotlib.use("Agg")
-pytestmark = pytest.mark.integration
+pytestmark = pytest.mark.patch
 
 
 def _compute_single_element_stiffness_eigenvalues() -> tuple[np.ndarray, float, int]:

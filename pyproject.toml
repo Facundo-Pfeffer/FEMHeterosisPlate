@@ -27,5 +27,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = [
-    "integration: integration-level diagnostics and checks",
+    "patch: element patch tests — strain recovery and eigenvalue spectrum",
+    "benchmark: comparison against classical Kirchhoff analytical solutions",
+    "final_project_specific: tests specific to the CE 222 plate-with-hole final project",
 ]

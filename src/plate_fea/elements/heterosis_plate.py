@@ -1,4 +1,15 @@
-"""Heterosis quadrilateral: Q8 ``w``, Q9 rotations, selective integration for bending vs shear."""
+"""
+Heterosis quadrilateral plate element (Hughes & Cohen 1978).
+
+Uses Q8 serendipity shape functions for transverse displacement w (8 nodes, no center) and
+Q9 Lagrangian shape functions for rotations θ_x, θ_y (9 nodes, including element center).
+Bending stiffness K_b is integrated with a 3×3 Gauss rule; shear stiffness K_s uses a
+reduced 2×2 rule to suppress transverse-shear locking.
+
+Local DOF layout (26 DOFs per element):
+    indices 0–7:   w at Q8 nodes (corner and midside)
+    indices 8–25:  θ_x, θ_y pairs at Q9 nodes (corners, midsides, center)
+"""
 
 from __future__ import annotations
 
@@ -13,13 +24,14 @@ from plate_fea.quadrature import gauss_legendre_1d, tensor_product_rule
 
 
 class HeterosisPlateElement(PlateElementBase):
-    """
-    Heterosis plate element.
-
-    Local ordering:
-        [w_1..w_8, theta_x1, theta_y1, ..., theta_x9, theta_y9]
-    """
-
+    # Local edge numbering — each entry lists (start_corner, midside, end_corner) in local Q8 indices:
+    #   Q8 corners:  0=bottom-left, 1=bottom-right, 2=top-right, 3=top-left
+    #   Q8 midsides: 4=bottom,      5=right,        6=top,       7=left
+    #
+    #   Edge 1 (bottom): nodes [0, 4, 1]
+    #   Edge 2 (right):  nodes [1, 5, 2]
+    #   Edge 3 (top):    nodes [2, 6, 3]
+    #   Edge 4 (left):   nodes [3, 7, 0]
     local_edge_nodes = {
         1: np.array([0, 4, 1], dtype=int),
         2: np.array([1, 5, 2], dtype=int),
@@ -147,6 +159,12 @@ class HeterosisPlateElement(PlateElementBase):
 
     @staticmethod
     def edge_quadratic_shape_functions(s: float) -> np.ndarray:
+        """
+        1D quadratic Lagrange shape functions for a three-node edge, evaluated at s ∈ [-1, 1].
+
+        Node order: [start_corner (s=-1), midside (s=0), end_corner (s=+1)].
+        Returns shape (3,).
+        """
         return np.array(
             [0.50 * s * (s - 1.0), 1.0 - s**2, 0.50 * s * (s + 1.0)],
             dtype=float,
@@ -154,6 +172,7 @@ class HeterosisPlateElement(PlateElementBase):
 
     @staticmethod
     def edge_quadratic_shape_function_derivatives(s: float) -> np.ndarray:
+        """Return dN/ds for the three-node edge shape functions at s ∈ [-1, 1]. Returns shape (3,)."""
         return np.array([s - 0.50, -2.0 * s, s + 0.50], dtype=float)
 
     @staticmethod
@@ -178,7 +197,12 @@ class HeterosisPlateElement(PlateElementBase):
 
     @staticmethod
     def geometry_jacobian(xi: float, eta: float, geometry_coordinates: np.ndarray) -> np.ndarray:
-        """Compute the 2x2 geometric Jacobian d(x,y)/d(xi,eta) from Q8 geometry mapping."""
+        """
+        Compute the 2×2 Jacobian matrix J of the Q8 isoparametric mapping at (xi, eta).
+
+        Layout:  J[0, 0] = dx/dxi,   J[0, 1] = dx/deta
+                 J[1, 0] = dy/dxi,   J[1, 1] = dy/deta
+        """
         dN_dxi, dN_deta = HeterosisPlateElement.q8_shape_function_gradients_parent(xi, eta)
         jacobian = np.zeros((2, 2), dtype=float)
         jacobian[0, 0] = dN_dxi @ geometry_coordinates[:, 0]
@@ -193,7 +217,12 @@ class HeterosisPlateElement(PlateElementBase):
         dN_deta: np.ndarray,
         jacobian: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Map parent-space gradients to physical-space gradients via J^{-T}."""
+        """
+        Convert parent-space gradients (dN/dxi, dN/deta) to physical-space gradients (dN/dx, dN/dy).
+
+        Uses the chain rule: [dN/dx, dN/dy]^T = J^{-T} [dN/dxi, dN/deta]^T.
+        Returns (dN_dx, dN_dy), each of the same shape as the input arrays.
+        """
         inv_jacobian = np.linalg.inv(jacobian)
         gradients_parent = np.vstack([dN_dxi, dN_deta])
         gradients_physical = inv_jacobian.T @ gradients_parent
@@ -201,30 +230,40 @@ class HeterosisPlateElement(PlateElementBase):
 
     @staticmethod
     def bending_B_matrix(dN_theta_dx: np.ndarray, dN_theta_dy: np.ndarray) -> np.ndarray:
-        """Assemble bending strain-displacement matrix B_b (curvatures from theta gradients)."""
+        """
+        Assemble the 3×26 bending strain-displacement matrix B_b.
+
+        Bending strains:  [κ_xx, κ_yy, κ_xy] = B_b @ u_local
+          κ_xx = dθ_x/dx,  κ_yy = dθ_y/dy,  κ_xy = dθ_x/dy + dθ_y/dx
+        """
         B_b = np.zeros((3, 26), dtype=float)
         for local_node_id in range(9):
-            local_dof_x = 8 + 2 * local_node_id
-            local_dof_y = local_dof_x + 1
-            B_b[0, local_dof_x] = dN_theta_dx[local_node_id]
-            B_b[1, local_dof_y] = dN_theta_dy[local_node_id]
-            B_b[2, local_dof_x] = dN_theta_dy[local_node_id]
-            B_b[2, local_dof_y] = dN_theta_dx[local_node_id]
+            theta_x_column = 8 + 2 * local_node_id
+            theta_y_column = theta_x_column + 1
+            B_b[0, theta_x_column] = dN_theta_dx[local_node_id]
+            B_b[1, theta_y_column] = dN_theta_dy[local_node_id]
+            B_b[2, theta_x_column] = dN_theta_dy[local_node_id]
+            B_b[2, theta_y_column] = dN_theta_dx[local_node_id]
         return B_b
 
     @staticmethod
     def shear_B_matrix(dN_w_dx: np.ndarray, dN_w_dy: np.ndarray, N_theta: np.ndarray) -> np.ndarray:
-        """Assemble shear strain-displacement matrix B_s for gamma_xz, gamma_yz."""
+        """
+        Assemble the 2×26 transverse shear strain-displacement matrix B_s.
+
+        Shear strains:  [γ_xz, γ_yz] = B_s @ u_local
+          γ_xz = dw/dx − θ_x,  γ_yz = dw/dy − θ_y
+        """
         B_s = np.zeros((2, 26), dtype=float)
         for local_node_id in range(8):
             B_s[0, local_node_id] = dN_w_dx[local_node_id]
             B_s[1, local_node_id] = dN_w_dy[local_node_id]
 
         for local_node_id in range(9):
-            local_dof_x = 8 + 2 * local_node_id
-            local_dof_y = local_dof_x + 1
-            B_s[0, local_dof_x] = -N_theta[local_node_id]
-            B_s[1, local_dof_y] = -N_theta[local_node_id]
+            theta_x_column = 8 + 2 * local_node_id
+            theta_y_column = theta_x_column + 1
+            B_s[0, theta_x_column] = -N_theta[local_node_id]
+            B_s[1, theta_y_column] = -N_theta[local_node_id]
 
         return B_s
 
@@ -244,11 +283,11 @@ class HeterosisPlateElement(PlateElementBase):
         w_node_ids = mesh.w_location_matrix[:, element_id]
         theta_node_ids = mesh.theta_location_matrix[:, element_id]
 
-        final_w_gdof_id = mesh.total_w_node_number
+        theta_dof_start_index = mesh.total_w_node_number
         global_dof_indices = list(w_node_ids.tolist())
         for theta_node_id in theta_node_ids:
-            global_dof_indices.append(final_w_gdof_id + 2 * theta_node_id)
-            global_dof_indices.append(final_w_gdof_id + 2 * theta_node_id + 1)
+            global_dof_indices.append(theta_dof_start_index + 2 * theta_node_id)
+            global_dof_indices.append(theta_dof_start_index + 2 * theta_node_id + 1)
 
         return np.asarray(global_dof_indices, dtype=int)
 
@@ -275,20 +314,20 @@ class HeterosisPlateElement(PlateElementBase):
         D_b = material.bending_constitutive_matrix
         D_s = material.shear_constitutive_matrix
 
-        bend_o = kwargs.get("bending_quadrature_order", (3, 3))
-        shear_o = kwargs.get("shear_quadrature_order", (2, 2))
-        if not (isinstance(bend_o, tuple) and len(bend_o) == 2):
+        bending_quadrature_order = kwargs.get("bending_quadrature_order", (3, 3))
+        shear_quadrature_order = kwargs.get("shear_quadrature_order", (2, 2))
+        if not (isinstance(bending_quadrature_order, tuple) and len(bending_quadrature_order) == 2):
             raise TypeError("bending_quadrature_order must be a pair (order_x, order_y).")
-        if not (isinstance(shear_o, tuple) and len(shear_o) == 2):
+        if not (isinstance(shear_quadrature_order, tuple) and len(shear_quadrature_order) == 2):
             raise TypeError("shear_quadrature_order must be a pair (order_x, order_y).")
-        bx, by = int(bend_o[0]), int(bend_o[1])
-        sx, sy = int(shear_o[0]), int(shear_o[1])
+        bending_order_x, bending_order_y = int(bending_quadrature_order[0]), int(bending_quadrature_order[1])
+        shear_order_x, shear_order_y = int(shear_quadrature_order[0]), int(shear_quadrature_order[1])
 
         K_b = np.zeros((26, 26), dtype=float)
         K_s = np.zeros((26, 26), dtype=float)
 
         # Bending: curvatures depend on theta gradients.
-        bending_rule = tensor_product_rule(order_x=bx, order_y=by)
+        bending_rule = tensor_product_rule(order_x=bending_order_x, order_y=bending_order_y)
         for point, weight in zip(bending_rule.points, bending_rule.weights):
             xi, eta = point
             jacobian = self.geometry_jacobian(xi, eta, geometry_coordinates)
@@ -306,7 +345,7 @@ class HeterosisPlateElement(PlateElementBase):
             K_b += weight * (B_b.T @ D_b @ B_b) * det_jacobian
 
         # Shear: gamma = grad(w) - theta.
-        shear_rule = tensor_product_rule(order_x=sx, order_y=sy)
+        shear_rule = tensor_product_rule(order_x=shear_order_x, order_y=shear_order_y)
         for point, weight in zip(shear_rule.points, shear_rule.weights):
             xi, eta = point
             jacobian = self.geometry_jacobian(xi, eta, geometry_coordinates)

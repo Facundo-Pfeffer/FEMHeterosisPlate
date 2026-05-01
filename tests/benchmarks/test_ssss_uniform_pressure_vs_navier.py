@@ -13,14 +13,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from plate_fea.assembly import assemble_force_vector, assemble_stiffness_matrix
 from plate_fea.boundary_conditions import ElementSurfaceLoad, EssentialBoundaryCondition
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
 from plate_fea.model import PlateModel
 from plate_fea.reference_solutions import kirchhoff_ssss_uniform_load_center_deflection_square
-from plate_fea.solver import solve_linear_system
+from plate_fea.solver import solve_displacement_system
 
 
 def test_ssss_uniform_pressure_center_matches_navier_series() -> None:
@@ -60,14 +59,11 @@ def test_ssss_uniform_pressure_center_matches_navier_series() -> None:
     for element_id in range(mesh.total_element_number):
         model.add_surface_load(ElementSurfaceLoad(element_id=element_id, magnitude=pressure_pa))
 
-    k = assemble_stiffness_matrix(model)
-    f = assemble_force_vector(model)
-    bc_ess, bc_val = model.build_essential_boundary_arrays()
-    u = solve_linear_system(k, f, bc_ess, bc_val)  # u: w DOFs then θx, θy [rad]
+    _, _, displacement = solve_displacement_system(model)  # w DOFs then θx, θy [rad]
 
     centre_m = np.array([0.5 * a_m, 0.5 * a_m])
     centre_w_node = int(np.argmin(np.linalg.norm(mesh.node_coordinates - centre_m, axis=1)))
-    w_centre_m = float(u[centre_w_node])
+    w_centre_m = float(displacement[centre_w_node])
 
     w_navier_m = kirchhoff_ssss_uniform_load_center_deflection_square(
         side=a_m,

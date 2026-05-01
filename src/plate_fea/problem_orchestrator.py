@@ -165,19 +165,19 @@ def apply_hole_top_line_loads(config: ProblemConfig, model: PlateModel) -> None:
     y_target = config.geometry.hole_y_max
     x_lower = config.geometry.hole_x_min
     x_upper = config.geometry.hole_x_max
-    node_xy = model.mesh.node_coordinates
-    w_lm = model.mesh.w_location_matrix  # shape: (8, n_element)
-    tol = config.tolerance
+    node_coordinates = model.mesh.node_coordinates
+    w_location_matrix = model.mesh.w_location_matrix  # shape: (8, n_element)
+    tolerance = config.tolerance
 
     # Vectorized edge detection over all elements/edges using connectivity + node coordinates.
     # This avoids per-element geometry extraction and nested Python loops over coordinates.
     for edge_id, local_edge_nodes in HeterosisPlateElement.local_edge_nodes.items():
-        edge_node_ids = w_lm[local_edge_nodes, :]  # shape: (3, n_element)
-        edge_x = node_xy[edge_node_ids, 0]  # shape: (3, n_element)
-        edge_y = node_xy[edge_node_ids, 1]  # shape: (3, n_element)
+        edge_node_ids = w_location_matrix[local_edge_nodes, :]  # shape: (3, n_element)
+        edge_x = node_coordinates[edge_node_ids, 0]  # shape: (3, n_element)
+        edge_y = node_coordinates[edge_node_ids, 1]  # shape: (3, n_element)
 
-        on_hole_top_y = np.all(np.abs(edge_y - y_target) <= tol, axis=0)
-        within_hole_top_x = np.all((edge_x >= x_lower - tol) & (edge_x <= x_upper + tol), axis=0)
+        on_hole_top_y = np.all(np.abs(edge_y - y_target) <= tolerance, axis=0)
+        within_hole_top_x = np.all((edge_x >= x_lower - tolerance) & (edge_x <= x_upper + tolerance), axis=0)
         hit_elements = np.flatnonzero(on_hole_top_y & within_hole_top_x)
 
         for element_id in hit_elements.tolist():
@@ -195,8 +195,8 @@ def extract_point_a_deflection(config: ProblemConfig, mesh: HeterosisMesh, solut
     target = np.array([config.geometry.hole_x_max, config.geometry.hole_y_min], dtype=float)
     distances = np.linalg.norm(mesh.node_coordinates - target[None, :], axis=1)
     node_id = int(np.argmin(distances))
-    w_a = float(solution[node_id])
-    return node_id, w_a
+    point_a_deflection = float(solution[node_id])
+    return node_id, point_a_deflection
 
 
 def solve_plate_problem(config: ProblemConfig = ProblemConfig()) -> ProblemResult:
@@ -249,14 +249,14 @@ def solve_clamped_square_plate_line_load_case(
             )
 
     # 2) Apply uniform line load on top boundary edges (y = side_length).
-    node_xy = mesh.node_coordinates
-    w_lm = mesh.w_location_matrix
+    node_coordinates = mesh.node_coordinates
+    w_location_matrix = mesh.w_location_matrix
     y_top = config.side_length
-    tol = config.tolerance
+    tolerance = config.tolerance
     for edge_id, local_edge_nodes in HeterosisPlateElement.local_edge_nodes.items():
-        edge_node_ids = w_lm[local_edge_nodes, :]
-        edge_y = node_xy[edge_node_ids, 1]
-        is_top_edge = np.all(np.abs(edge_y - y_top) <= tol, axis=0)
+        edge_node_ids = w_location_matrix[local_edge_nodes, :]
+        edge_y = node_coordinates[edge_node_ids, 1]
+        is_top_edge = np.all(np.abs(edge_y - y_top) <= tolerance, axis=0)
         top_elements = np.flatnonzero(is_top_edge)
         for element_id in top_elements.tolist():
             model.add_line_load(
