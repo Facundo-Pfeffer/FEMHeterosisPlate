@@ -1,232 +1,233 @@
 # FEMHeterosisPlate
 
-Finite element implementation of a shear-deformable isotropic plate solver based on a heterosis quadrilateral element.
+Finite element implementation of a shear-deformable isotropic plate solver based on the heterosis quadrilateral element (Hughes & Cohen 1978).
 
-Documentation is organized under `docs/` (see `docs/README.md`).
-
-Current element/model choices:
-- Q8 interpolation for transverse displacement `w`
-- Q9 interpolation for rotations `theta_x`, `theta_y`
-- selective integration (`3 x 3` for bending, `2 x 2` for shear)
-- sparse global assembly and linear solve
+- **Q8** interpolation for transverse displacement `w`
+- **Q9** interpolation for rotations `θ_x`, `θ_y`
+- Selective integration: **3×3** Gauss for bending, **2×2** Gauss for shear
+- Sparse global assembly and direct linear solve
 
 ---
 
 ## 1) Problem target
 
-The repository is organized to solve and study plate problems with the heterosis element, including:
-- plate with centered rectangular cutout (assignment case)
-- full rectangular/square benchmark plates
-- mesh and load sensitivity checks
+The primary goal is to determine the transverse deflection at **Point A** (bottom-right corner of the cut-out) for a 500×300 mm plate with a centred 250×180 mm rectangular cut-out, using the heterosis element. Secondary goals include benchmark verification and convergence studies.
 
 ---
 
 ## 2) Install and run
 
-From repository root:
+From the repository root (conda environment `ce222fp` recommended):
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Tests live under **`tests/`** in **`unit/`**, **`integration/`**, and **`validation/`** (see **`tests/README.md`**). Run:
+Run all tests:
 
 ```bash
 python -m pytest tests/ -q
 ```
 
+Run a specific category by mark:
+
+```bash
+python -m pytest -m patch -q               # element patch tests
+python -m pytest -m benchmark -q           # classical plate benchmarks
+python -m pytest -m final_project_specific -q  # plate-with-hole checks
+```
+
 ---
 
-## 3) Core formulation implemented
+## 3) Core formulation
 
-The code implements heterosis plate generalized variables:
-- `w`
-- `theta_x`, `theta_y`
-
-Element local DOF ordering:
+Element local DOF ordering (26 DOFs per element):
 
 ```text
-q_e = [
-  w1, w2, w3, w4, w5, w6, w7, w8,
-  theta_x1, theta_y1,
-  theta_x2, theta_y2,
-  ...,
-  theta_x9, theta_y9
-]^T
+q_e = [w_1 … w_8,  θ_x1 θ_y1,  θ_x2 θ_y2,  …,  θ_x9 θ_y9]^T
 ```
 
-Total local DOFs: `8 + 2*9 = 26`.
-
-Global unknown layout:
+Global DOF layout:
 
 ```text
-u = [w all nodes, theta_x/theta_y all theta nodes]^T
+u = [w (all w-nodes) | θ_x θ_y pairs (all θ-nodes)]^T
 ```
 
-So:
-- `w(node_id) -> node_id`
-- `theta_x(theta_node_id) -> n_w + 2*theta_node_id`
-- `theta_y(theta_node_id) -> n_w + 2*theta_node_id + 1`
+Index map:
+- `w(node_id)           → node_id`
+- `θ_x(theta_node_id)  → n_w + 2·theta_node_id`
+- `θ_y(theta_node_id)  → n_w + 2·theta_node_id + 1`
 
 ---
 
 ## 4) Repository structure
 
+### Source (`src/plate_fea/`)
+
 ```text
 src/plate_fea/
-├── __init__.py                 # package entry point — exports full public API, see module map inside
-├── assembly.py                 # assemble_stiffness_matrix, assemble_force_vector
-├── boundary_conditions.py      # EssentialBoundaryCondition, ElementEdgeLineLoad, ElementSurfaceLoad
-├── materials.py                # PlateMaterial — precomputes D_b (3×3) and D_s (2×2)
-├── mesh.py                     # HeterosisMesh — Q8/Q9 two-level node layout
-├── mesh_generation.py          # mesh generators for rectangles and plate-with-hole geometry
-├── model.py                    # PlateModel — collects mesh + material + element + BCs + loads
-├── problem_orchestrator.py     # solve_plate_problem, ProblemConfig — high-level drivers
-├── quadrature.py               # gauss_legendre_1d, tensor_product_rule (lru_cache)
-├── solver.py                   # solve_linear_system, solve_displacement_system
+├── __init__.py                # full public API — pipeline docstring + module map
+├── assembly.py                # assemble_stiffness_matrix, assemble_force_vector
+├── boundary_conditions.py     # EssentialBoundaryCondition, ElementEdgeLineLoad, ElementSurfaceLoad
+├── materials.py               # PlateMaterial — precomputes D_b (3×3) and D_s (2×2)
+├── mesh.py                    # HeterosisMesh — Q8/Q9 two-level node layout
+├── mesh_generation.py         # structured and Gmsh-based Q8 generators; quarter-circle mesh
+├── model.py                   # PlateModel — mesh + material + element + BCs + loads
+├── postprocessing.py          # SampledFields, sample_fields_at_quadrature_points
+├── plotting.py                # apply_report_style, plot_heterosis_mesh, plot_w_field,
+│                              #   plot_field_at_quadrature_points, plot_all_result_fields
+├── problem_orchestrator.py    # ProblemConfig, ProblemResult, solve_plate_problem
+├── quadrature.py              # gauss_legendre_1d, tensor_product_rule (lru_cache)
+├── reference_solutions.py     # Kirchhoff SSSS/CCCC analytical solutions
+├── solver.py                  # solve_linear_system, solve_displacement_system
 └── elements/
-    ├── base.py                 # PlateElementBase — abstract element interface
-    └── heterosis_plate.py      # HeterosisPlateElement — shape functions, B-matrices, local K/f
+    ├── base.py                # PlateElementBase — abstract element interface
+    └── heterosis_plate.py     # HeterosisPlateElement — shape functions, B-matrices, K/f
 ```
 
-Scripts:
+### Scripts (`scripts/`)
 
-```text
-scripts/
-├── run_smoke_test.py
-├── run_problem.py
-├── run_ssss_square_uniform_pressure.py
-├── run_clamped_square_uniform_pressure.py
-├── convergence_compare_uniform_vs_gmsh.py
-├── convergence_study_point_a.py
-├── plot_mesh.py
-├── plot_mesh_sliders.py
-├── plot_mesh_demo.py
-└── plot_mesh_strategies_comparison.py
-```
+| Script | Purpose |
+|--------|---------|
+| `plot_assignment_results.py` | Solve the plate-with-hole problem and save all result figures to `output/assignment/` |
+| `plot_results.py` | Solve a rectangular plate (SSSS or CCCC) and show result field figures |
+| `convergence_study_point_a.py` | Convergence study: `w_A` vs mesh refinement for the assignment problem |
+| `convergence_compare_uniform_vs_gmsh.py` | Compare uniform-buffer-ring vs Gmsh mesh strategies |
+| `plot_mesh_strategies_comparison.py` | Visual comparison of mesh strategies |
+| `plot_mesh.py` | Static mesh figure for the plate-with-hole |
+| `plot_mesh_sliders.py` | Interactive slider control over mesh density |
+| `plot_mesh_demo.py` | Single-element mesh demo |
+| `run_problem.py` | Headless solve, prints `w_A` to stdout |
+| `run_ssss_square_uniform_pressure.py` | SSSS square plate benchmark solve |
+| `run_clamped_square_uniform_pressure.py` | CCCC square plate benchmark solve |
+| `run_smoke_test.py` | Minimal end-to-end smoke test |
 
-Tests:
+### Tests (`tests/`)
 
 ```text
 tests/
-├── README.md
-├── patch_test/
-│   ├── test_five_element_patch.py
-│   └── test_single_element_eigen.py
-├── unit/
+├── unit/                       # Fast, isolated component tests (no full FEM solve)
 │   ├── test_shape_functions.py
-│   └── test_material_constitutive_cache.py
-├── integration/
+│   ├── test_material_constitutive_cache.py
 │   ├── test_element_jacobian_and_stiffness.py
-│   ├── test_patch_linear_field.py
 │   └── test_mesh_strategies.py
-└── validation/
-    ├── test_ssss_uniform_pressure_vs_navier.py
-    └── test_clamped_square_uniform_pressure.py
-```
-
----
-
-## Patch testing
-
-Focused patch diagnostics live in **`tests/patch_test/`** (see `tests/patch_test/README.md`).
-
-- `test_five_element_patch.py` — verifies strain accuracy on a distorted 5-element patch using a
-  representable linear kinematic field; all five strain components must match analytical values to 1e-10.
-- `test_single_element_eigen.py` — checks that a distorted single element has exactly 3 near-zero eigenvalues.
-
-```bash
-python -m pytest tests/patch_test -q
-```
-
-Exact linear-field regression is in **`tests/integration/test_patch_linear_field.py`**:
-
-```bash
-python -m pytest tests/integration/test_patch_linear_field.py -q
+│
+├── patch/                      # Element patch tests — strain recovery and eigenvalue spectrum
+│   ├── _helpers.py             # shared mesh builders, kinematic fields, sampling helpers
+│   ├── test_patch_linear_field.py
+│   ├── test_simple_patch_cases.py   # constant shear (2×2 pts) and constant κ (3×3 pts)
+│   ├── test_five_element_patch.py   # distorted 5-element enclosing patch
+│   └── test_single_element_eigen.py
+│
+├── benchmarks/                 # Classical analytical comparisons
+│   ├── test_ssss_uniform_pressure_vs_navier.py
+│   ├── test_clamped_square_uniform_pressure.py
+│   └── test_circular_plate_hughes.py   # Hughes Fig. 5.3.19 quarter-circle convergence
+│
+└── final_project_specific/     # CE 222 plate-with-hole assignment checks
+    └── test_plate_with_hole_equilibrium.py
 ```
 
 ---
 
 ## 5) High-level workflows
 
-### 5.1 Assignment-like solve (plate with cutout)
-
-Use orchestrator entry script:
+### 5.1 Assignment problem — plate with cut-out
 
 ```bash
-python scripts/run_problem.py --resolution 2 --hole-refine 2 --buffer 30
+python scripts/plot_assignment_results.py
+python scripts/plot_assignment_results.py --resolution 4 --hole-refine 3
 ```
 
-Pipeline:
-1. mesh generation (`UniformBufferRingQ8Generator`)
-2. model/material/element setup (`PlateModel`, `PlateMaterial`, `HeterosisPlateElement`)
-3. boundary conditions (`EssentialBoundaryCondition`)
-4. line loads (`ElementEdgeLineLoad`)
-5. assembly and solve (`solve_displacement_system`)
-6. point-of-interest deflection extraction
+Saves nine numbered figures to `output/assignment/`:
 
-For manual control of individual steps, use `assemble_stiffness_matrix`, `assemble_force_vector`, and `solve_linear_system` directly (all imported from `plate_fea`).
+```
+01_mesh.png          mesh with loaded edge and Point A
+02_w.png             transverse displacement w
+03.1_gamma_xz.png    shear strain γ_xz
+03.2_gamma_yz.png    shear strain γ_yz
+04.1_M_xx.png        bending moment M_xx
+04.2_M_yy.png        bending moment M_yy
+04.3_M_xy.png        bending moment M_xy
+05.1_Q_x.png         shear force Q_x
+05.2_Q_y.png         shear force Q_y
+```
 
-### 5.2 Simply supported square plate under uniform pressure (Navier check)
+For a headless solve that just prints `w_A`:
 
 ```bash
-python scripts/run_ssss_square_uniform_pressure.py --nx 20 --ny 20
+python scripts/run_problem.py --resolution 2
 ```
 
-SI defaults: 1 m span, 5 mm thickness, 200 GPa, uniform −10 kPa pressure. All edges pinned in translation (`w = 0`); edge moments natural. Compares FE centre deflection [m] to the Kirchhoff–Navier series (shear deformable element is slightly more flexible than thin-plate theory).
-
-### 5.3 Clamped square plate under uniform pressure (Kirchhoff β check)
+### 5.2 Rectangular plate benchmarks
 
 ```bash
-python scripts/run_clamped_square_uniform_pressure.py --nx 20 --ny 20
+python scripts/plot_results.py                    # SSSS, 10×10 elements
+python scripts/plot_results.py --bc clamped --nx 12 --ny 12
 ```
 
-Same SI defaults as §5.3; all edges clamped (`w = θ_x = θ_y = 0` on the boundary). Compares FE centre deflection to the classical thin-plate value `w = β q a⁴ / D` with `β ≈ 0.00126532` (tabulated for `ν ≈ 0.3`, e.g. Timoshenko & Woinowsky-Krieger).
+### 5.3 Convergence study
+
+```bash
+python scripts/convergence_study_point_a.py --out-dir output
+```
+
+Produces a convergence curve (`w_A` vs `N_el`) and a mesh gallery across eight refinement levels.
+
+### 5.4 Post-processing and plotting
+
+```python
+from plate_fea import (
+    sample_fields_at_quadrature_points,
+    plot_all_result_fields,
+    plot_w_field,
+    plot_field_at_quadrature_points,
+    apply_report_style,
+)
+
+apply_report_style()
+fields = sample_fields_at_quadrature_points(mesh, model, displacement)
+fig = plot_all_result_fields(mesh, model, displacement, hole_rect=(x0, x1, y0, y1))
+```
+
+Fields available on `SampledFields`: `x`, `y`, `kappa_xx`, `kappa_yy`, `kappa_xy`, `gamma_xz`, `gamma_yz`, `M_xx`, `M_yy`, `M_xy`, `Q_x`, `Q_y`.
 
 ---
 
-## 6) Mesh controls
+## 6) Mesh generators
 
-### Static mesh plot
+| Generator | Description |
+|-----------|-------------|
+| `generate_rectangular_heterosis_mesh` | Uniform structured Q8 grid for a rectangle |
+| `generate_quarter_circle_heterosis_mesh` | Structured Q8 polar grid for a quarter-disc (Hughes circular plate benchmarks) |
+| `UniformBufferRingQ8Generator` | Plate-with-hole, uniform buffer ring around cut-out |
+| `GmshBoundarySensitiveQ8Generator` | Plate-with-hole, Gmsh distance-field sizing (requires `gmsh`) |
 
 ```bash
-python scripts/plot_mesh.py --resolution 2 --hole-refine 2 --buffer 30
+python scripts/plot_mesh.py --resolution 2 --hole-refine 2
+python scripts/plot_mesh_sliders.py          # interactive
 ```
-
-### Interactive slider plot
-
-```bash
-python scripts/plot_mesh_sliders.py
-```
-
-Sliders:
-- `resolution`: global density
-- `hole_refine`: extra refinement near hole
-- `buffer`: symmetric buffer ring thickness around hole
 
 ---
 
 ## 7) Implementation notes
 
-- Constitutive matrices are precomputed once per `PlateMaterial` instance and stored read-only.
-- Quadrature rules are cached (`lru_cache`) to avoid repeated allocation in element loops.
-- Area Jacobian `det(∂(x,y)/∂(ξ,η))` is required strictly positive at stiffness and surface quadrature points (`HeterosisPlateElement.positive_area_jacobian_det`); edge traction uses a positive line metric.
-- Global assembly uses sparse CSR matrices.
+- Constitutive matrices are precomputed once per `PlateMaterial` and stored read-only.
+- Quadrature rules are `lru_cache`-memoised to avoid repeated allocation in element loops.
+- Area Jacobian `det(∂(x,y)/∂(ξ,η))` is verified strictly positive at all integration points.
+- The assembled stiffness matrix is never modified by the solver; the free/constrained partition is solved directly so `K @ u` correctly recovers both applied loads and reaction forces.
+- Global sparse assembly uses SciPy LIL → CSR conversion.
 
 ---
 
 ## 8) Current status
 
-Working and tested:
-- heterosis element shape functions and mappings
-- local stiffness + edge/surface load vectors
-- sparse global assembly and constrained solve
-- plate-with-hole workflow orchestration
-- benchmark/feasibility scripts and automated tests
-
-This is a solid baseline for:
-- assignment result generation
-- convergence studies
-- further validation against FEAP/reference solutions.
+Implemented and tested:
+- Heterosis element: shape functions, geometry Jacobian, bending/shear B-matrices, local K and load vectors
+- Sparse global assembly and constrained linear solve
+- Plate-with-hole workflow with Gmsh and structured mesh strategies
+- Post-processing: strain/stress resultant fields sampled at quadrature points (no nodal projection)
+- Result plotting: individual figures per field, report-quality style matching convergence scripts
+- Patch tests: constant shear (2×2 pts), constant κ (3×3 pts), distorted 5-element, eigenvalue spectrum
+- Benchmarks: SSSS/CCCC rectangular plates vs Kirchhoff, circular plate convergence (Hughes Fig. 5.3.19)
+- Equilibrium validation: applied force, reaction forces, and moment balance for the assignment problem

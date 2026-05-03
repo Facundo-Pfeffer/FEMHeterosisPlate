@@ -60,3 +60,19 @@ class ElementSurfaceLoad:
 
     element_id: int
     magnitude: float | Callable[[float, float], float]
+
+
+@dataclass(frozen=True)
+class NodalPointLoad:
+    """
+    Concentrated generalized nodal load.
+
+    Args:
+        field_name: One of "w", "theta_x", or "theta_y".
+        node_id: Global node id for the corresponding field.
+        value: Concentrated load value. Positive acts in the positive
+            direction of the selected generalized displacement.
+    """
+    field_name: str
+    node_id: int
+    value: float

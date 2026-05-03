@@ -1,222 +1,327 @@
-"""
-Circular plate convergence test — Hughes & Cohen (1978), Figures 5.3.18–5.3.19.
-
-Only one quadrant is discretised (Fig. 5.3.18); symmetry conditions are applied on the
-two straight edges (x = 0 and y = 0).
-
-Parameters (as stated by Hughes):
-    E = 10.92 × 10⁵,  ν = 0.3,  R = 5,  t = 2
-
-Two load/BC combinations:
-    SS₁-U : simply-supported outer edge, uniform pressure
-    CL-U  : clamped outer edge, uniform pressure
-
-Reference solution — Reissner-Mindlin plate (first-order shear correction):
-    w_M(r) = w_K(r) + q(R² − r²) / (4κGt)
-
-where w_K is the Kirchhoff thin-plate solution and κ = 5/6 is the shear factor. The
-same correction applies to both SS₁ and CL; only w_K differs between the two cases.
-
-The mesh has a small inner hole (r_min = R / (4 n_el)) to avoid degenerate elements
-at the origin. The FEM centre deflection is compared to the analytical solution
-evaluated at r = r_min; the remaining quadrature error is O((r_min/R)²).
-
-Convergence check: n_el = 6 must be within 5 % of the reference, and it must be
-closer to the reference than n_el = 3.
-"""
-
 from __future__ import annotations
 
-import numpy as np
-import pytest
+from pathlib import Path
 
-from plate_fea.boundary_conditions import ElementSurfaceLoad, EssentialBoundaryCondition
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+from plate_fea.boundary_conditions import EssentialBoundaryCondition, NodalPointLoad
 from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
-from plate_fea.mesh_generation import generate_quarter_circle_heterosis_mesh
+from plate_fea.mesh_generation import generate_centered_quarter_disk_heterosis_mesh
 from plate_fea.model import PlateModel
+from plate_fea.postprocessing import sample_w_at_quadrature_points
 from plate_fea.solver import solve_displacement_system
 
-pytestmark = pytest.mark.benchmark
 
-# ── Problem parameters (Hughes) ────────────────────────────────────────────────
-E   = 10.92e5
-NU  = 0.3
-R   = 5.0
-T   = 2.0
-Q   = -1.0          # uniform transverse pressure, downward
-KAPPA = 5.0 / 6.0  # Reissner shear-correction factor
+E = 10.92e5
+NU = 0.3
+R = 5.0
+T = 2.0
+P = 1.0
+KAPPA = 5.0 / 6.0
+N_EL = 12
 
-TOL = 1.0e-9        # node-on-boundary tolerance
+TOL = 1.0e-9
+MAX_RELATIVE_L2_ERROR = 0.25
 
-
-# ── Analytical reference (Reissner-Mindlin first-order correction) ─────────────
-
-def _flexural_rigidity() -> float:
-    return E * T**3 / (12.0 * (1.0 - NU**2))
-
-
-def _shear_stiffness() -> float:
-    G = E / (2.0 * (1.0 + NU))
-    return KAPPA * G * T
+OUTPUT_DIR = Path("output/hughes")
+T_LABEL = f"{T:g}".replace(".", "_")
+PLOT_FILE = OUTPUT_DIR / f"hughes_cl_c_heterosis_t_{T_LABEL}.png"
+CSV_FILE = OUTPUT_DIR / f"hughes_cl_c_heterosis_t_{T_LABEL}.csv"
 
 
-def w_mindlin_ss1(r: float) -> float:
-    """Reissner-Mindlin centre deflection for SS₁, uniform load, evaluated at radius r."""
-    D  = _flexural_rigidity()
-    kGt = _shear_stiffness()
-    r2, R2 = r**2, R**2
-    w_kirchhoff = Q * (R2 - r2) * ((5 + NU) * R2 - (1 + NU) * r2) / (64.0 * D * (1.0 + NU))
-    w_shear     = Q * (R2 - r2) / (4.0 * kGt)
+def make_material() -> PlateMaterial:
+    return PlateMaterial(
+        young_modulus=E,
+        poisson_ratio=NU,
+        thickness=T,
+        shear_correction_factor=KAPPA,
+    )
+
+
+def bending_rigidity(material: PlateMaterial) -> float:
+    return float(material.bending_constitutive_matrix[0, 0])
+
+
+def shear_rigidity(material: PlateMaterial) -> float:
+    return float(material.shear_constitutive_matrix[0, 0])
+
+
+def normalized_displacement(
+    w: np.ndarray,
+    material: PlateMaterial,
+) -> np.ndarray:
+    return 16.0 * np.pi * bending_rigidity(material) * w / (P * R**2)
+
+
+def reissner_clamped_center_load_w(
+    r: np.ndarray,
+    material: PlateMaterial,
+) -> np.ndarray:
+    """
+    Axisymmetric Reissner-Mindlin reference for a clamped circular plate
+    under a centered concentrated load.
+
+    The point-load shear correction is singular at r = 0, so the comparison
+    is made at positive-radius quadrature points.
+    """
+    rho = np.asarray(r, dtype=float) / R
+    rho = np.clip(rho, 1.0e-14, 1.0)
+
+    d = bending_rigidity(material)
+    kgt = shear_rigidity(material)
+
+    w_kirchhoff = (
+        P
+        * R**2
+        / (16.0 * np.pi * d)
+        * (1.0 - rho**2 + 2.0 * rho**2 * np.log(rho))
+    )
+
+    w_shear = P / (2.0 * np.pi * kgt) * np.log(1.0 / rho)
+
     return w_kirchhoff + w_shear
 
 
-def w_mindlin_cl(r: float) -> float:
-    """Reissner-Mindlin centre deflection for CL, uniform load, evaluated at radius r."""
-    D  = _flexural_rigidity()
-    kGt = _shear_stiffness()
-    r2, R2 = r**2, R**2
-    w_kirchhoff = Q * (R2 - r2)**2 / (64.0 * D)
-    w_shear     = Q * (R2 - r2) / (4.0 * kGt)
-    return w_kirchhoff + w_shear
+def build_model() -> PlateModel:
+    material = make_material()
+    mesh = generate_centered_quarter_disk_heterosis_mesh(
+        radius=R,
+        n_el=N_EL,
+    )
 
-
-# ── FEM helpers ────────────────────────────────────────────────────────────────
-
-def _build_model(n_el: int) -> tuple[PlateModel, float]:
-    """Return (model, r_min) for a quarter-circle mesh with n_el elements per direction."""
-    mesh = generate_quarter_circle_heterosis_mesh(R, n_el)
-    material = PlateMaterial(young_modulus=E, poisson_ratio=NU, thickness=T)
-    model = PlateModel(
+    return PlateModel(
         mesh=mesh,
         constitutive_material=material,
         element_formulation=HeterosisPlateElement(),
     )
-    r_min = R / (4.0 * n_el)
-    return model, r_min
 
 
-def _apply_symmetry_bcs(model: PlateModel) -> None:
+def add_symmetry_boundary_conditions(model: PlateModel) -> None:
     """
-    Symmetry on straight edges of the quarter disc:
-        y = 0  (θ = 0):    θ_y = 0  (slope ∂w/∂y vanishes by symmetry)
-        x = 0  (θ = π/2):  θ_x = 0  (slope ∂w/∂x vanishes by symmetry)
+    Symmetric loading on the two straight symmetry boundaries.
+
+    With the repository convention
+
+        gamma_xz = dw/dx - theta_x,
+        gamma_yz = dw/dy - theta_y,
+
+    symmetry gives:
+        x = 0: theta_x = 0
+        y = 0: theta_y = 0
     """
-    xy = model.mesh.node_coordinates
-    on_x_axis  = np.flatnonzero(np.abs(xy[:, 1]) < TOL)   # y ≈ 0
-    on_y_axis  = np.flatnonzero(np.abs(xy[:, 0]) < TOL)   # x ≈ 0
+    theta_xy = model.mesh.theta_node_coordinates
+
+    theta_nodes_on_x_equal_zero = np.flatnonzero(
+        np.abs(theta_xy[:, 0]) < TOL
+    )
+    theta_nodes_on_y_equal_zero = np.flatnonzero(
+        np.abs(theta_xy[:, 1]) < TOL
+    )
 
     model.add_essential_condition(
-        EssentialBoundaryCondition("theta_y", on_x_axis.tolist(), 0.0)
+        EssentialBoundaryCondition(
+            "theta_x",
+            theta_nodes_on_x_equal_zero.tolist(),
+            0.0,
+        )
     )
     model.add_essential_condition(
-        EssentialBoundaryCondition("theta_x", on_y_axis.tolist(), 0.0)
+        EssentialBoundaryCondition(
+            "theta_y",
+            theta_nodes_on_y_equal_zero.tolist(),
+            0.0,
+        )
     )
 
 
-def _apply_outer_bc(model: PlateModel, bc: str) -> None:
-    """
-    Outer circular boundary (r ≈ R):
-        SS₁ : w = 0  (hard simply-supported; M_n = 0 is a natural condition)
-        CL  : w = θ_x = θ_y = 0
-    """
-    xy = model.mesh.node_coordinates
-    r  = np.linalg.norm(xy, axis=1)
-    on_outer = np.flatnonzero(np.abs(r - R) < TOL)
+def add_clamped_outer_boundary(model: PlateModel) -> None:
+    w_xy = model.mesh.node_coordinates
+    theta_xy = model.mesh.theta_node_coordinates
+
+    w_radius = np.linalg.norm(w_xy, axis=1)
+    theta_radius = np.linalg.norm(theta_xy, axis=1)
+
+    w_nodes_on_outer_radius = np.flatnonzero(np.abs(w_radius - R) < 5.0e-8)
+    theta_nodes_on_outer_radius = np.flatnonzero(
+        np.abs(theta_radius - R) < 5.0e-8
+    )
 
     model.add_essential_condition(
-        EssentialBoundaryCondition("w", on_outer.tolist(), 0.0)
+        EssentialBoundaryCondition(
+            "w",
+            w_nodes_on_outer_radius.tolist(),
+            0.0,
+        )
     )
-    if bc == "clamped":
-        for field in ("theta_x", "theta_y"):
-            model.add_essential_condition(
-                EssentialBoundaryCondition(field, on_outer.tolist(), 0.0)
+
+    for field_name in ("theta_x", "theta_y"):
+        model.add_essential_condition(
+            EssentialBoundaryCondition(
+                field_name,
+                theta_nodes_on_outer_radius.tolist(),
+                0.0,
             )
+        )
 
 
-def _apply_uniform_load(model: PlateModel) -> None:
-    for element_id in range(model.mesh.total_element_number):
-        model.add_surface_load(ElementSurfaceLoad(element_id=element_id, magnitude=Q))
+def center_w_node_id(model: PlateModel) -> int:
+    radius = np.linalg.norm(model.mesh.node_coordinates, axis=1)
+    node_id = int(np.argmin(radius))
+
+    if radius[node_id] > TOL:
+        raise ValueError(
+            "The mesh does not contain a true center w-node. "
+            f"Closest radius is {radius[node_id]:.6e}."
+        )
+
+    return node_id
 
 
-def _solve_and_get_centre_w(n_el: int, bc: str) -> float:
-    """Full solve for the quarter-circle plate; return w at the node closest to r = 0."""
-    model, _ = _build_model(n_el)
-    _apply_symmetry_bcs(model)
-    _apply_outer_bc(model, bc)
-    _apply_uniform_load(model)
+def add_center_point_load(model: PlateModel) -> None:
+    center_node = center_w_node_id(model)
+
+    model.add_nodal_load(
+        NodalPointLoad(
+            field_name="w",
+            node_id=center_node,
+            value=P / 4.0,
+        )
+    )
+
+
+def solve_hughes_model() -> tuple[PlateModel, np.ndarray]:
+    model = build_model()
+
+    add_symmetry_boundary_conditions(model)
+    add_clamped_outer_boundary(model)
+    add_center_point_load(model)
 
     _, _, displacement = solve_displacement_system(model)
 
-    xy = model.mesh.node_coordinates
-    r  = np.linalg.norm(xy, axis=1)
-    centre_node = int(np.argmin(r))
-    return float(displacement[centre_node])
+    return model, displacement
 
 
-# ── Tests ──────────────────────────────────────────────────────────────────────
+def save_profile_csv(
+    rho: np.ndarray,
+    y_fem: np.ndarray,
+    y_ref: np.ndarray,
+) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-@pytest.mark.parametrize("n_el", [3, 6])
-def test_ss1_uniform_load(n_el: int) -> None:
-    """
-    SS₁-U: simply-supported outer edge, uniform pressure.
+    data = np.column_stack([rho, y_fem, y_ref])
+    header = "r_over_R,normalized_w_fem,normalized_w_reissner"
 
-    At n_el = 6 the FEM result must be within 5 % of the Reissner-Mindlin reference
-    (evaluated at the innermost mesh node r = r_min). At n_el = 3 a wider 15 %
-    window is allowed, reflecting the coarser mesh.
-    """
-    r_min = R / (4.0 * n_el)
-    w_ref = w_mindlin_ss1(r_min)
-    w_fem = _solve_and_get_centre_w(n_el, bc="simply_supported")
-
-    rtol = 0.05 if n_el == 6 else 0.15
-    np.testing.assert_allclose(w_fem, w_ref, rtol=rtol,
-        err_msg=f"SS₁-U n_el={n_el}: w_fem={w_fem:.4e}, w_ref={w_ref:.4e}")
-
-
-@pytest.mark.parametrize("n_el", [3, 6])
-def test_cl_uniform_load(n_el: int) -> None:
-    """
-    CL-U: clamped outer edge, uniform pressure.
-
-    Shear deformation accounts for ~70 % of the total deflection at t/R = 0.4,
-    so the Reissner-Mindlin reference is essential here (Kirchhoff alone would
-    be ~2.5× too small). Tolerance: 5 % at n_el = 6, 15 % at n_el = 3.
-    """
-    r_min = R / (4.0 * n_el)
-    w_ref = w_mindlin_cl(r_min)
-    w_fem = _solve_and_get_centre_w(n_el, bc="clamped")
-
-    rtol = 0.05 if n_el == 6 else 0.15
-    np.testing.assert_allclose(w_fem, w_ref, rtol=rtol,
-        err_msg=f"CL-U n_el={n_el}: w_fem={w_fem:.4e}, w_ref={w_ref:.4e}")
-
-
-def test_convergence_ss1_uniform_load() -> None:
-    """Finer mesh (n_el = 6) must be closer to the reference than the coarse mesh (n_el = 3)."""
-    errors = {}
-    for n_el in (3, 6):
-        r_min = R / (4.0 * n_el)
-        w_ref = w_mindlin_ss1(r_min)
-        w_fem = _solve_and_get_centre_w(n_el, bc="simply_supported")
-        errors[n_el] = abs(w_fem - w_ref) / abs(w_ref)
-
-    assert errors[6] < errors[3], (
-        f"Expected convergence: error at n_el=6 ({errors[6]:.4f}) "
-        f"should be less than at n_el=3 ({errors[3]:.4f})"
+    np.savetxt(
+        CSV_FILE,
+        data,
+        delimiter=",",
+        header=header,
+        comments="",
     )
 
 
-def test_convergence_cl_uniform_load() -> None:
-    """Finer mesh (n_el = 6) must be closer to the reference than the coarse mesh (n_el = 3)."""
-    errors = {}
-    for n_el in (3, 6):
-        r_min = R / (4.0 * n_el)
-        w_ref = w_mindlin_cl(r_min)
-        w_fem = _solve_and_get_centre_w(n_el, bc="clamped")
-        errors[n_el] = abs(w_fem - w_ref) / abs(w_ref)
+def plot_profile(
+    rho_fem: np.ndarray,
+    y_fem: np.ndarray,
+    material: PlateMaterial,
+) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    assert errors[6] < errors[3], (
-        f"Expected convergence: error at n_el=6 ({errors[6]:.4f}) "
-        f"should be less than at n_el=3 ({errors[3]:.4f})"
+    rho_exact = np.linspace(1.0e-4, 1.0, 600)
+    r_exact = rho_exact * R
+    y_exact = normalized_displacement(
+        reissner_clamped_center_load_w(r_exact, material),
+        material,
+    )
+
+    order = np.argsort(rho_fem)
+
+    fig, ax = plt.subplots(figsize=(5.0, 6.2))
+
+    ax.plot(
+        rho_exact,
+        y_exact,
+        linewidth=1.5,
+        label="Exact solution (Reissner theory)",
+    )
+    ax.scatter(
+        rho_fem[order],
+        y_fem[order],
+        marker="o",
+        facecolors="none",
+        edgecolors="black",
+        label="Heterosis",
+    )
+
+    ax.set_xlabel(r"$r/R$")
+    ax.set_ylabel(r"$16\pi D w/(P R^2)$")
+
+    ax.set_xlim(0.0, 1.0)
+
+    y_max = max(float(np.nanmax(y_exact)), float(np.nanmax(y_fem)))
+    ax.set_ylim(0.0, 1.08 * y_max)
+    ax.invert_yaxis()
+
+    ax.xaxis.tick_top()
+    ax.xaxis.set_label_position("top")
+
+    ax.set_xticks(np.arange(0.0, 1.01, 0.1))
+    ax.set_xticks(np.arange(0.0, 1.01, 0.05), minor=True)
+
+    ax.grid(axis="x", which="major", linestyle="-", linewidth=0.6, alpha=0.6)
+    ax.grid(axis="x", which="minor", linestyle="--", linewidth=0.4, alpha=0.4)
+
+    ax.legend(loc="lower right", frameon=False)
+
+    fig.tight_layout()
+    fig.savefig(PLOT_FILE, dpi=300)
+    plt.close(fig)
+
+
+def test_hughes_clamped_circular_plate_center_load_profile() -> None:
+    model, displacement = solve_hughes_model()
+    material = model.constitutive_material
+
+    sampled_w = sample_w_at_quadrature_points(
+        model.mesh,
+        displacement,
+        quadrature_order=(2, 2),
+    )
+
+    r_fem = np.hypot(sampled_w.x, sampled_w.y)
+    rho_fem = r_fem / R
+
+    y_fem = normalized_displacement(sampled_w.w, material)
+    y_ref = normalized_displacement(
+        reissner_clamped_center_load_w(r_fem, material),
+        material,
+    )
+
+    plot_profile(rho_fem, y_fem, material)
+    save_profile_csv(rho_fem, y_fem, y_ref)
+
+    comparison_mask = (
+        np.isfinite(y_fem)
+        & np.isfinite(y_ref)
+        & (rho_fem > 0.05)
+        & (rho_fem < 0.95)
+    )
+
+    relative_l2_error = (
+        np.linalg.norm(y_fem[comparison_mask] - y_ref[comparison_mask])
+        / np.linalg.norm(y_ref[comparison_mask])
+    )
+
+    assert relative_l2_error < MAX_RELATIVE_L2_ERROR, (
+        "Hughes clamped circular-plate center-load profile is outside tolerance. "
+        f"relative_l2_error={relative_l2_error:.6f}, "
+        f"limit={MAX_RELATIVE_L2_ERROR:.6f}, "
+        f"plot={PLOT_FILE}, "
+        f"csv={CSV_FILE}"
     )

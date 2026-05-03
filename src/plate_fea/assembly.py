@@ -54,4 +54,8 @@ def assemble_force_vector(model: PlateModel) -> np.ndarray:
         element_dof_ids = model.element_formulation.local_to_global_dof_indices(model.mesh, load.element_id)
         F[element_dof_ids] += element_force_vector
 
+    for load in model.nodal_loads:
+        dof_id = model.get_global_dof(load.field_name, load.node_id)
+        F[dof_id] += load.value
+
     return F

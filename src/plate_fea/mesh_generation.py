@@ -1,18 +1,27 @@
 """
 Mesh generators for the Heterosis plate finite element.
 
-For a plain rectangle:
-    generate_rectangular_heterosis_mesh(width, height, nx, ny)
+Module layout
+-------------
+1. PlateWithHoleGeometry
+       Frozen dataclass that describes the plate-with-hole geometry.
+       Shared by all plate-with-hole generators and by ProblemConfig.
 
-For the plate-with-hole benchmark, the main choices are:
-    UniformBufferRingQ8Generator      — structured, uniform spacing, recommended default
-    GmshBoundarySensitiveQ8Generator  — unstructured, distance-field sizing (requires gmsh)
+2. MeshGenerator
+       Protocol satisfied by any mesh generator object.
 
-Geometry is described by PlateWithHoleGeometry (outer dimensions + hole dimensions).
-All generator classes implement a .generate() -> HeterosisMesh method.
-Interior-warping generators (WarpedInteriorQ8Generator, FocusedWarpedInteriorQ8Generator,
-TargetAwareWarpedQ8Generator) apply coordinate mappings to any base mesh to increase
-element distortion, used for robustness and convergence studies.
+3. Private helpers  (_node_key, _build_q8_mesh_from_cartesian_lines)
+       Internal building blocks consumed only by the generators below.
+
+4. Simple geometry generators  (patch tests, unit tests, benchmarks)
+       generate_rectangular_heterosis_mesh
+       generate_centered_quarter_disk_heterosis_mesh
+
+5. Plate-with-hole generators  (the assignment problem)
+       UniformBufferRingQ8Generator        — structured mesh, uniform buffer
+                                             spacing; recommended default.
+       GmshBoundarySensitiveQ8Generator    — unstructured mesh, distance-field
+                                             sizing; requires the gmsh package.
 """
 
 from __future__ import annotations
@@ -24,6 +33,8 @@ import numpy as np
 
 from plate_fea.mesh import HeterosisMesh
 
+
+# ── Geometry dataclass ──────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class PlateWithHoleGeometry:
@@ -49,105 +60,226 @@ class PlateWithHoleGeometry:
         return 0.5 * (self.outer_height + self.hole_height)
 
 
-def _segment_lines(
-    start: float,
-    end: float,
-    n_div: int,
-    clustering: str = "none",
-    *,
-    power: float = 1.8,
-) -> np.ndarray:
-    if n_div < 1:
-        raise ValueError("n_div must be >= 1")
-    if not end > start:
-        raise ValueError("segment end must be greater than start")
-    if power <= 0.0:
-        raise ValueError("power must be > 0")
-
-    s = np.linspace(0.0, 1.0, n_div + 1)
-    if clustering == "none":
-        mapped = s
-    elif clustering == "start":
-        mapped = s**power
-    elif clustering == "end":
-        mapped = 1.0 - (1.0 - s) ** power
-    elif clustering == "both":
-        mapped = 0.5 * (1.0 - np.cos(np.pi * s))
-    else:
-        raise ValueError("clustering must be one of: none, start, end, both")
-
-    return start + (end - start) * mapped
-
-
-def _merge_lines(*line_parts: np.ndarray) -> np.ndarray:
-    out = [line_parts[0]]
-    for part in line_parts[1:]:
-        out.append(part[1:])
-    merged = np.concatenate(out)
-    if np.any(np.diff(merged) <= 0.0):
-        raise ValueError("line coordinates must be strictly increasing")
-    return merged
-
-
-def _node_key(x: float, y: float, digits: int = 9) -> tuple[float, float]:
-    return (round(x, digits), round(y, digits))
-
+# ── MeshGenerator Protocol ───────────────────────────────────────────────────────
 
 class MeshGenerator(Protocol):
     def generate(self) -> HeterosisMesh: ...
 
 
-@dataclass(frozen=True)
-class UniformEightBlockQ8Generator:
+# ── Private helpers ──────────────────────────────────────────────────────────────
+
+def _node_key(x: float, y: float, digits: int = 9) -> tuple[float, float]:
+    return (round(x, digits), round(y, digits))
+
+
+def _build_q8_mesh_from_cartesian_lines(
+    geometry: PlateWithHoleGeometry,
+    *,
+    x_lines: np.ndarray,
+    y_lines: np.ndarray,
+) -> HeterosisMesh:
+    nodes: list[tuple[float, float]] = []
+    node_ids: dict[tuple[float, float], int] = {}
+    elements: list[list[int]] = []
+
+    def get_node_id(x: float, y: float) -> int:
+        key = _node_key(x, y)
+        if key not in node_ids:
+            node_ids[key] = len(nodes)
+            nodes.append((x, y))
+        return node_ids[key]
+
+    for ix in range(len(x_lines) - 1):
+        x0 = float(x_lines[ix])
+        x1 = float(x_lines[ix + 1])
+        x_mid = 0.5 * (x0 + x1)
+
+        in_middle_x = (x0 >= geometry.hole_x_min) and (x1 <= geometry.hole_x_max)
+        for iy in range(len(y_lines) - 1):
+            y0 = float(y_lines[iy])
+            y1 = float(y_lines[iy + 1])
+            y_mid = 0.5 * (y0 + y1)
+
+            in_middle_y = (y0 >= geometry.hole_y_min) and (y1 <= geometry.hole_y_max)
+            if in_middle_x and in_middle_y:
+                continue
+
+            local = [
+                get_node_id(x0, y0),
+                get_node_id(x1, y0),
+                get_node_id(x1, y1),
+                get_node_id(x0, y1),
+                get_node_id(x_mid, y0),
+                get_node_id(x1, y_mid),
+                get_node_id(x_mid, y1),
+                get_node_id(x0, y_mid),
+            ]
+            elements.append(local)
+
+    node_coordinates = np.asarray(nodes, dtype=float)
+    w_location_matrix = np.asarray(elements, dtype=int).T
+    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates, w_location_matrix=w_location_matrix)
+
+
+# ── Simple geometry generators (mostly used for testing) ────────────────────────
+
+def generate_rectangular_heterosis_mesh(width: float, height: float, nx: int, ny: int) -> HeterosisMesh:
     """
-    Structured heterosis mesh with uniform outer-hole-outer spacing.
+    Generate a structured Q8 heterosis mesh that covers a full rectangle [0, width] × [0, height].
 
-    Parameters:
-        resolution: Global density level (larger -> finer mesh).
-        hole_refine: Additional density in hole-adjacent bands.
+    Args:
+        width:  Horizontal extent of the rectangle. Must be positive.
+        height: Vertical extent of the rectangle. Must be positive.
+        nx:     Number of elements along the x-axis. Must be >= 1.
+        ny:     Number of elements along the y-axis. Must be >= 1.
+
+    Returns:
+        HeterosisMesh with nx × ny serendipity Q8 elements and the
+        rotational (Heterosis) node added internally by HeterosisMesh.
     """
+    if width <= 0.0 or height <= 0.0:
+        raise ValueError("width and height must be positive.")
+    if nx < 1 or ny < 1:
+        raise ValueError("nx and ny must be >= 1.")
 
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    resolution: int = 2
-    hole_refine: int = 2
+    # Build geometry nodes on the Q8 pattern; Q9-style rotational interpolation nodes are added internally.
+    i_max = 2 * nx
+    j_max = 2 * ny
+    x_grid = np.linspace(0.0, width, i_max + 1)
+    y_grid = np.linspace(0.0, height, j_max + 1)
 
-    def generate(self) -> HeterosisMesh:
-        g = self.geometry
-        if g.hole_width >= g.outer_width or g.hole_height >= g.outer_height:
-            raise ValueError("hole dimensions must be strictly smaller than outer dimensions")
-        if self.resolution < 1:
-            raise ValueError("resolution must be >= 1")
-        if self.hole_refine < 0:
-            raise ValueError("hole_refine must be >= 0")
+    node_id_map: dict[tuple[int, int], int] = {}
+    node_coordinates: list[list[float]] = []
 
-        # Divisions per region (uniform within each region band).
-        n_outer_x = 2 + 2 * self.resolution
-        n_outer_y = 2 + 2 * self.resolution
-        n_hole_x = 4 + 2 * self.resolution + 2 * self.hole_refine
-        n_hole_y = 4 + 2 * self.resolution + 2 * self.hole_refine
+    for j in range(j_max + 1):
+        for i in range(i_max + 1):
+            # Exclude element center geometry nodes (odd, odd) from the displacement-node layout.
+            if (i % 2 == 1) and (j % 2 == 1):
+                continue
+            node_id_map[(i, j)] = len(node_coordinates)
+            node_coordinates.append([float(x_grid[i]), float(y_grid[j])])
 
-        x_left = np.linspace(0.0, g.hole_x_min, n_outer_x + 1)
-        x_mid = np.linspace(g.hole_x_min, g.hole_x_max, n_hole_x + 1)
-        x_right = np.linspace(g.hole_x_max, g.outer_width, n_outer_x + 1)
-        x_lines = np.concatenate([x_left[:-1], x_mid[:-1], x_right])
+    elements: list[list[int]] = []
+    for ey in range(ny):
+        for ex in range(nx):
+            i0 = 2 * ex
+            j0 = 2 * ey
+            # Local displacement-node order: bl, br, tr, tl, mid-bottom, mid-right, mid-top, mid-left.
+            local_keys = [
+                (i0, j0),
+                (i0 + 2, j0),
+                (i0 + 2, j0 + 2),
+                (i0, j0 + 2),
+                (i0 + 1, j0),
+                (i0 + 2, j0 + 1),
+                (i0 + 1, j0 + 2),
+                (i0, j0 + 1),
+            ]
+            elements.append([node_id_map[k] for k in local_keys])
 
-        y_bot = np.linspace(0.0, g.hole_y_min, n_outer_y + 1)
-        y_mid = np.linspace(g.hole_y_min, g.hole_y_max, n_hole_y + 1)
-        y_top = np.linspace(g.hole_y_max, g.outer_height, n_outer_y + 1)
-        y_lines = np.concatenate([y_bot[:-1], y_mid[:-1], y_top])
+    node_coordinates_arr = np.asarray(node_coordinates, dtype=float)
+    w_location_matrix = np.asarray(elements, dtype=int).T
+    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates_arr, w_location_matrix=w_location_matrix)
 
-        return _build_q8_mesh_from_cartesian_lines(g, x_lines=x_lines, y_lines=y_lines)
 
+def generate_centered_quarter_disk_heterosis_mesh(
+        radius: float,
+        n_el: int,
+) -> HeterosisMesh:
+    """
+    Generate a structured Q8 mesh for the quarter disk  x ≥ 0, y ≥ 0.
+
+    An n_el × n_el element grid on the computational square [0, 1]² is mapped
+    smoothly onto the quarter disk via the Fong (2011) mapping:
+
+        x(s, t) = radius · s · √(1 − t²/2)
+        y(s, t) = radius · t · √(1 − s²/2)
+
+    This mapping places a non-degenerate element at the origin, so the w-node
+    at r = 0 is well-defined. That property is required for concentrated-load
+    circular-plate problems where the center deflection is the output of interest.
+
+    Args:
+        radius: Radius of the quarter disk. Must be positive.
+        n_el:   Number of elements along each axis of the computational square.
+                Must be >= 1.
+
+    Returns:
+        HeterosisMesh with n_el² serendipity Q8 elements mapped onto the
+        quarter disk, plus the rotational node added internally by HeterosisMesh.
+    """
+    if radius <= 0.0:
+        raise ValueError("radius must be positive.")
+
+    if n_el < 1:
+        raise ValueError("n_el must be >= 1.")
+
+    node_id_by_grid_point: dict[tuple[int, int], int] = {}
+    node_coordinates: list[tuple[float, float]] = []
+
+    def map_to_quarter_disk(s: float, t: float) -> tuple[float, float]:
+        x = radius * s * np.sqrt(1.0 - 0.5 * t ** 2)
+        y = radius * t * np.sqrt(1.0 - 0.5 * s ** 2)
+        return float(x), float(y)
+
+    def get_node_id(i_half: int, j_half: int) -> int:
+        key = (i_half, j_half)
+
+        if key in node_id_by_grid_point:
+            return node_id_by_grid_point[key]
+
+        s = i_half / (2.0 * n_el)
+        t = j_half / (2.0 * n_el)
+
+        node_id = len(node_coordinates)
+        node_id_by_grid_point[key] = node_id
+        node_coordinates.append(map_to_quarter_disk(s, t))
+
+        return node_id
+
+    connectivity: list[list[int]] = []
+
+    for j in range(n_el):
+        for i in range(n_el):
+            n1 = get_node_id(2 * i, 2 * j)
+            n2 = get_node_id(2 * i + 2, 2 * j)
+            n3 = get_node_id(2 * i + 2, 2 * j + 2)
+            n4 = get_node_id(2 * i, 2 * j + 2)
+            n5 = get_node_id(2 * i + 1, 2 * j)
+            n6 = get_node_id(2 * i + 2, 2 * j + 1)
+            n7 = get_node_id(2 * i + 1, 2 * j + 2)
+            n8 = get_node_id(2 * i, 2 * j + 1)
+
+            connectivity.append([n1, n2, n3, n4, n5, n6, n7, n8])
+
+    return HeterosisMesh.from_arrays(
+        node_coordinates=np.asarray(node_coordinates, dtype=float),
+        w_location_matrix=np.asarray(connectivity, dtype=int).T,
+    )
+
+
+# ── Plate-with-hole generators ───────────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class UniformBufferRingQ8Generator:
     """
-    Structured heterosis mesh with a uniform buffer band around the hole.
+    Structured Q8 heterosis mesh for a rectangular plate with a centered rectangular hole.
 
-    Parameters:
-        resolution: Global density level (larger -> finer mesh).
-        hole_refine: Additional density in hole-adjacent bands.
-        buffer: Buffer-band thickness around the hole boundary.
+    The domain is divided into five x-bands and five y-bands, producing a
+    cross-shaped exclusion zone over the hole. A uniform buffer band of
+    thickness ``buffer`` separates the hole boundary from the outer mesh region,
+    concentrating elements near the hole without requiring manual zone tuning.
+
+    Args:
+        geometry:    Plate and hole dimensions. Defaults to PlateWithHoleGeometry().
+        resolution:  Base element count per zone segment; larger values produce
+                     a finer mesh everywhere. Must be >= -1.
+        hole_refine: Extra elements added to the two hole-adjacent buffer bands.
+                     Must be >= 0.
+        buffer:      Thickness of the uniform buffer band surrounding the hole
+                     boundary on all four sides. Must be > 0 and small enough
+                     that the buffer rectangle fits strictly between the hole
+                     and the outer plate boundary.
     """
 
     geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
@@ -200,387 +332,34 @@ class UniformBufferRingQ8Generator:
 
 
 @dataclass(frozen=True)
-class EightBlockStructuredQ8Generator:
-    """
-    Eight-block structured heterosis mesh kept for compatibility and comparisons.
-
-    Parameters:
-        n_left, n_middle_x, n_right: Element divisions in x-direction block bands.
-        n_bottom, n_middle_y, n_top: Element divisions in y-direction block bands.
-        grading_power: Clustering exponent for graded segments.
-    """
-
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    n_left: int = 6
-    n_middle_x: int = 12
-    n_right: int = 6
-    n_bottom: int = 4
-    n_middle_y: int = 10
-    n_top: int = 6
-    grading_power: float = 1.05
-
-    def generate(self) -> HeterosisMesh:
-        g = self.geometry
-        if g.hole_width >= g.outer_width or g.hole_height >= g.outer_height:
-            raise ValueError("hole dimensions must be strictly smaller than outer dimensions")
-
-        x_lines = _merge_lines(
-            _segment_lines(0.0, g.hole_x_min, self.n_left, clustering="end", power=self.grading_power),
-            _segment_lines(g.hole_x_min, g.hole_x_max, self.n_middle_x, clustering="both"),
-            _segment_lines(g.hole_x_max, g.outer_width, self.n_right, clustering="start", power=self.grading_power),
-        )
-        y_lines = _merge_lines(
-            _segment_lines(0.0, g.hole_y_min, self.n_bottom, clustering="end", power=self.grading_power),
-            _segment_lines(g.hole_y_min, g.hole_y_max, self.n_middle_y, clustering="both"),
-            _segment_lines(g.hole_y_max, g.outer_height, self.n_top, clustering="start", power=self.grading_power),
-        )
-
-        return _build_q8_mesh_from_cartesian_lines(g, x_lines=x_lines, y_lines=y_lines)
-
-
-@dataclass(frozen=True)
-class BufferRingStructuredQ8Generator:
-    """
-    Structured heterosis mesh with a buffer rectangle and graded spacing.
-
-    Parameters:
-        buffer: Offset between hole boundary and buffer rectangle.
-        grading_power: Clustering exponent for graded segments.
-        n_*: Element divisions for each outer/buffer/hole segment in x and y.
-    """
-
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    buffer: float = 30.0
-
-    # segment divisions (outer -> buffer -> hole band -> buffer -> outer)
-    n_outer_left: int = 4
-    n_buffer_left: int = 3
-    n_hole_band_x: int = 14
-    n_buffer_right: int = 3
-    n_outer_right: int = 4
-
-    n_outer_bottom: int = 3
-    n_buffer_bottom: int = 3
-    n_hole_band_y: int = 12
-    n_buffer_top: int = 5
-    n_outer_top: int = 4
-    grading_power: float = 1.10
-
-    def generate(self) -> HeterosisMesh:
-        g = self.geometry
-        if g.hole_width >= g.outer_width or g.hole_height >= g.outer_height:
-            raise ValueError("hole dimensions must be strictly smaller than outer dimensions")
-
-        if self.buffer <= 0.0:
-            raise ValueError("buffer must be > 0")
-
-        buf_x_min = max(0.0, g.hole_x_min - self.buffer)
-        buf_x_max = min(g.outer_width, g.hole_x_max + self.buffer)
-        buf_y_min = max(0.0, g.hole_y_min - self.buffer)
-        buf_y_max = min(g.outer_height, g.hole_y_max + self.buffer)
-        if not (0.0 < buf_x_min < g.hole_x_min < g.hole_x_max < buf_x_max < g.outer_width):
-            raise ValueError("buffer too large or too small; symmetric buffer must lie between hole and outer boundary")
-        if not (0.0 < buf_y_min < g.hole_y_min < g.hole_y_max < buf_y_max < g.outer_height):
-            raise ValueError("buffer too large or too small; symmetric buffer must lie between hole and outer boundary")
-
-        # Bias more resolution toward the HOLE and especially toward the TOP of the hole (load application region).
-        x_lines = _merge_lines(
-            _segment_lines(0.0, buf_x_min, self.n_outer_left, clustering="end", power=self.grading_power),
-            _segment_lines(buf_x_min, g.hole_x_min, self.n_buffer_left, clustering="end", power=self.grading_power),
-            _segment_lines(g.hole_x_min, g.hole_x_max, self.n_hole_band_x, clustering="both"),
-            _segment_lines(g.hole_x_max, buf_x_max, self.n_buffer_right, clustering="start", power=self.grading_power),
-            _segment_lines(buf_x_max, g.outer_width, self.n_outer_right, clustering="start", power=self.grading_power),
-        )
-        y_lines = _merge_lines(
-            _segment_lines(0.0, buf_y_min, self.n_outer_bottom, clustering="end", power=self.grading_power),
-            _segment_lines(buf_y_min, g.hole_y_min, self.n_buffer_bottom, clustering="end", power=self.grading_power),
-            _segment_lines(g.hole_y_min, g.hole_y_max, self.n_hole_band_y, clustering="both"),
-            _segment_lines(g.hole_y_max, buf_y_max, self.n_buffer_top, clustering="start", power=self.grading_power),
-            _segment_lines(buf_y_max, g.outer_height, self.n_outer_top, clustering="start", power=self.grading_power),
-        )
-
-        return _build_q8_mesh_from_cartesian_lines(g, x_lines=x_lines, y_lines=y_lines)
-
-
-@dataclass(frozen=True)
-class GradedBoundarySensitiveQ8Generator:
-    """
-    Graded heterosis mesh refined near load and BC-transition regions.
-
-    Parameters:
-        resolution: Global density level (larger -> finer mesh).
-        hole_refine: Additional density in hole-adjacent bands.
-        buffer: Buffer-band thickness around the hole.
-        grading_power: Clustering exponent for directional grading.
-    """
-
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    resolution: int = 2
-    hole_refine: int = 3
-    buffer: float = 30.0
-    grading_power: float = 1.35
-
-    def generate(self) -> HeterosisMesh:
-        g = self.geometry
-        if g.hole_width >= g.outer_width or g.hole_height >= g.outer_height:
-            raise ValueError("hole dimensions must be strictly smaller than outer dimensions")
-        if self.resolution < -1:
-            raise ValueError("resolution must be >= -1")
-        if self.hole_refine < 0:
-            raise ValueError("hole_refine must be >= 0")
-        if self.buffer <= 0.0:
-            raise ValueError("buffer must be > 0")
-        if self.grading_power <= 0.0:
-            raise ValueError("grading_power must be > 0")
-
-        buf_x_min = g.hole_x_min - self.buffer
-        buf_x_max = g.hole_x_max + self.buffer
-        buf_y_min = g.hole_y_min - self.buffer
-        buf_y_max = g.hole_y_max + self.buffer
-        if not (0.0 < buf_x_min < g.hole_x_min < g.hole_x_max < buf_x_max < g.outer_width):
-            raise ValueError("buffer too large or too small; symmetric buffer must lie between hole and outer boundary")
-        if not (0.0 < buf_y_min < g.hole_y_min < g.hole_y_max < buf_y_max < g.outer_height):
-            raise ValueError("buffer too large or too small; symmetric buffer must lie between hole and outer boundary")
-
-        n_outer = 2 + self.resolution
-        n_buffer = 2 + self.resolution
-        # Increase divisions in the hole-adjacent band to capture load-transfer gradients.
-        n_hole_x = 7 + 2 * self.resolution + 2 * self.hole_refine
-        n_hole_y = 9 + 2 * self.resolution + 2 * self.hole_refine
-
-        p = self.grading_power
-        x_lines = _merge_lines(
-            # Refine near the x=0 outer boundary (near the bottom-left transition region).
-            _segment_lines(0.0, buf_x_min, n_outer + 1, clustering="start", power=p),
-            _segment_lines(buf_x_min, g.hole_x_min, n_buffer + 1, clustering="start", power=p),
-            _segment_lines(g.hole_x_min, g.hole_x_max, n_hole_x, clustering="both"),
-            _segment_lines(g.hole_x_max, buf_x_max, n_buffer + 1, clustering="end", power=p),
-            # Refine near the x=outer_width outer boundary (near the top-right transition region).
-            _segment_lines(buf_x_max, g.outer_width, n_outer + 1, clustering="end", power=p),
-        )
-        y_lines = _merge_lines(
-            # Refine toward y=0 at the bottom-left transition region.
-            _segment_lines(0.0, buf_y_min, n_outer + 1, clustering="start", power=p),
-            _segment_lines(buf_y_min, g.hole_y_min, n_buffer + 1, clustering="start", power=p),
-            # Refine toward the loaded inner boundary segment (y = hole_y_max).
-            _segment_lines(g.hole_y_min, g.hole_y_max, n_hole_y, clustering="end", power=max(1.05, p)),
-            _segment_lines(g.hole_y_max, buf_y_max, n_buffer + 1, clustering="start", power=p),
-            # Refine toward y=outer_height at the top-right transition region.
-            _segment_lines(buf_y_max, g.outer_height, n_outer + 2, clustering="end", power=p),
-        )
-        return _build_q8_mesh_from_cartesian_lines(g, x_lines=x_lines, y_lines=y_lines)
-
-
-@dataclass(frozen=True)
-class WarpedInteriorQ8Generator:
-    """
-    Applies an interior coordinate mapping while preserving physical boundaries.
-
-    Parameters:
-        base: Base mesh generator that defines boundary-conforming connectivity.
-        amplitude: Displacement magnitude of the coordinate mapping.
-        p: Boundary-decay exponent for the interior mask.
-    """
-
-    base: MeshGenerator
-    amplitude: float = 18.0
-    p: float = 1.6
-
-    def generate(self) -> HeterosisMesh:
-        mesh = self.base.generate()
-        xy = mesh.node_coordinates.copy()
-
-        # Keep outer and inner boundaries fixed.
-        # Apply the mapping to interior nodes only (mask is zero on both boundaries).
-        # This changes element distortion/skewness without changing domain boundaries.
-        g = _infer_geometry_from_mesh(mesh)
-        x = xy[:, 0]
-        y = xy[:, 1]
-
-        dist_outer = np.minimum.reduce([x - 0.0, g.outer_width - x, y - 0.0, g.outer_height - y])
-        dist_hole = _distance_to_axis_aligned_rectangle(
-            x,
-            y,
-            x_min=g.hole_x_min,
-            x_max=g.hole_x_max,
-            y_min=g.hole_y_min,
-            y_max=g.hole_y_max,
-        )
-
-        eps = 1e-12
-        max_outer = float(np.max(dist_outer) + eps)
-        max_hole = float(np.max(dist_hole) + eps)
-        mask = (np.clip(dist_outer / max_outer, 0.0, 1.0) ** self.p) * (np.clip(dist_hole / max_hole, 0.0, 1.0) ** self.p)
-
-        xc = 0.5 * g.outer_width
-        yc = 0.5 * g.outer_height
-
-        # Directional mapping field with zero displacement on boundaries.
-        dx = (y - yc) / max(g.outer_height, eps)
-        dy = (x - xc) / max(g.outer_width, eps)
-        x_warp = x + self.amplitude * mask * dx
-        y_warp = y - 0.65 * self.amplitude * mask * dy
-
-        warped_node_coordinates = np.column_stack([x_warp, y_warp])
-        return HeterosisMesh.from_arrays(
-            node_coordinates=warped_node_coordinates,
-            w_location_matrix=mesh.w_location_matrix,
-        )
-
-
-@dataclass(frozen=True)
-class FocusedWarpedInteriorQ8Generator:
-    """
-    Interior coordinate mapping focused near load and BC-transition regions.
-
-    Parameters:
-        base: Base mesh generator that defines mesh topology/connectivity.
-        geometry: Plate-with-hole geometry used for weighting regions.
-        amplitude: Displacement magnitude of the coordinate mapping.
-        p: Boundary-decay exponent for the interior mask.
-    """
-
-    base: MeshGenerator
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    amplitude: float = 60.0
-    p: float = 1.45
-
-    def generate(self) -> HeterosisMesh:
-        mesh = self.base.generate()
-        g = self.geometry
-        xy = mesh.node_coordinates.copy()
-        x = xy[:, 0]
-        y = xy[:, 1]
-
-        # Zero displacement on hole and outer boundaries.
-        dist_outer = np.minimum.reduce([x - 0.0, g.outer_width - x, y - 0.0, g.outer_height - y])
-        dist_hole = _distance_to_axis_aligned_rectangle(
-            x,
-            y,
-            x_min=g.hole_x_min,
-            x_max=g.hole_x_max,
-            y_min=g.hole_y_min,
-            y_max=g.hole_y_max,
-        )
-        eps = 1e-12
-        max_outer = float(np.max(dist_outer) + eps)
-        max_hole = float(np.max(dist_hole) + eps)
-        mask = (np.clip(dist_outer / max_outer, 0.0, 1.0) ** self.p) * (np.clip(dist_hole / max_hole, 0.0, 1.0) ** self.p)
-
-        def gaussian(xc: float, yc: float, sx: float, sy: float) -> np.ndarray:
-            return np.exp(-0.5 * (((x - xc) / sx) ** 2 + ((y - yc) / sy) ** 2))
-
-        # Weight field centers:
-        # - loaded inner boundary segment (top edge of the hole)
-        # - outer boundary-condition transition regions (bottom-left and top-right corners)
-        load_w = gaussian(
-            0.5 * (g.hole_x_min + g.hole_x_max),
-            g.hole_y_max + 0.15 * (g.outer_height - g.hole_y_max),
-            sx=0.22 * g.outer_width,
-            sy=0.16 * g.outer_height,
-        )
-        bl_w = gaussian(0.12 * g.outer_width, 0.12 * g.outer_height, sx=0.16 * g.outer_width, sy=0.16 * g.outer_height)
-        tr_w = gaussian(0.88 * g.outer_width, 0.88 * g.outer_height, sx=0.16 * g.outer_width, sy=0.16 * g.outer_height)
-        field_w = np.clip(1.00 * load_w + 0.80 * bl_w + 0.80 * tr_w, 0.0, None)
-
-        # Curl-like mapping increases element skewness while remaining smooth for moderate amplitude.
-        u = (y - 0.5 * g.outer_height) / max(g.outer_height, eps)
-        v = (x - 0.5 * g.outer_width) / max(g.outer_width, eps)
-        x_warp = x + self.amplitude * mask * field_w * (0.95 * u + 0.25 * v)
-        y_warp = y - 0.80 * self.amplitude * mask * field_w * (0.90 * v - 0.20 * u)
-
-        warped_xy = np.column_stack([x_warp, y_warp])
-        return HeterosisMesh.from_arrays(
-            node_coordinates=warped_xy,
-            w_location_matrix=mesh.w_location_matrix,
-        )
-
-
-def _gmsh_bc_transition_sample_coordinates(
-    g: PlateWithHoleGeometry,
-    clamped_outer_edges: tuple[str, ...],
-    *,
-    sample_count: int,
-    transition_fraction: float,
-) -> list[tuple[float, float]]:
-    """
-    Return geometric sampling coordinates on short outer-boundary segments at **mixed**
-    clamped/free corners (each corner uses the two edges meeting there).
-
-    These are geometric coordinates used to define Gmsh distance fields. They are not FE mesh nodes.
-    """
-    valid = frozenset({"left", "right", "bottom", "top"})
-    clamped = {e for e in clamped_outer_edges if e in valid}
-    free = valid - clamped
-    outer_width, outer_height = g.outer_width, g.outer_height
-    sample_coordinates: list[tuple[float, float]] = []
-    transition_fraction_clamped = float(np.clip(transition_fraction, 0.0, 1.0))
-    sample_count = max(2, int(sample_count))
-
-    # TL (0,H): left / top
-    if "left" in clamped and "top" in free:
-        for y in np.linspace((1.0 - transition_fraction_clamped) * outer_height, outer_height, sample_count):
-            sample_coordinates.append((0.0, float(y)))
-    if "top" in clamped and "left" in free:
-        for x in np.linspace(0.0, transition_fraction_clamped * outer_width, sample_count):
-            sample_coordinates.append((float(x), float(outer_height)))
-
-    # TR (W,H): right / top — default: top clamped, right free → vertical right edge, upper segment
-    if "right" in clamped and "top" in free:
-        for x in np.linspace((1.0 - transition_fraction_clamped) * outer_width, outer_width, sample_count):
-            sample_coordinates.append((float(x), float(outer_height)))
-    if "top" in clamped and "right" in free:
-        for y in np.linspace((1.0 - transition_fraction_clamped) * outer_height, outer_height, sample_count):
-            sample_coordinates.append((float(outer_width), float(y)))
-
-    # BL (0,0): left / bottom
-    if "left" in clamped and "bottom" in free:
-        for y in np.linspace(0.0, transition_fraction_clamped * outer_height, sample_count):
-            sample_coordinates.append((0.0, float(y)))
-    if "bottom" in clamped and "left" in free:
-        for x in np.linspace(0.0, transition_fraction_clamped * outer_width, sample_count):
-            sample_coordinates.append((float(x), 0.0))
-
-    # BR (W,0): right / bottom
-    if "right" in clamped and "bottom" in free:
-        for y in np.linspace(0.0, transition_fraction_clamped * outer_height, sample_count):
-            sample_coordinates.append((float(outer_width), float(y)))
-    if "bottom" in clamped and "right" in free:
-        for x in np.linspace((1.0 - transition_fraction_clamped) * outer_width, outer_width, sample_count):
-            sample_coordinates.append((float(x), 0.0))
-
-    # Remove duplicates at shared segment endpoints.
-    seen: set[tuple[int, int]] = set()
-    deduped: list[tuple[float, float]] = []
-    scale = 1e7
-    for a, b in sample_coordinates:
-        key = (int(round(a * scale)), int(round(b * scale)))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append((a, b))
-    return deduped
-
-
-@dataclass(frozen=True)
 class GmshBoundarySensitiveQ8Generator:
     """
-    Gmsh-based heterosis mesh with distance-field sizing near selected boundaries.
+    Gmsh-based unstructured Q8 mesh with automatic distance-field element sizing.
 
-    Parameters:
-        resolution: Global density level (larger -> finer mesh).
-        hole_refine: Additional refinement near hole and transition regions.
-        clamped_outer_edges: Outer boundary segments with clamped boundary conditions.
-        bc_transition_fraction: Unused (reserved); gmsh sizing uses outer corner points only, not edge polylines.
-        bc_transition_samples: Unused (reserved); see bc_transition_fraction.
+    Gmsh places finer elements near the loaded hole-top edge and near the
+    clamped/free BC-transition corners (bottom-left and top-right of the outer
+    boundary), then coarsens toward the interior. This yields better element
+    quality near stress concentrations than the structured generator without
+    requiring manual zone tuning.
+
+    Requires the gmsh Python package (``pip install --upgrade gmsh``) and the
+    system library ``libGLU.so.1`` (``apt install libglu1-mesa`` on Debian/Ubuntu).
+
+    Args:
+        geometry:            Plate and hole dimensions. Defaults to PlateWithHoleGeometry().
+        resolution:          Global density level; larger values produce a finer mesh
+                             everywhere. Must be >= -1.
+        hole_refine:         Extra refinement applied near the hole boundary and near
+                             BC-transition corners. Must be >= 0.
+        clamped_outer_edges: Names of the outer edges that carry a clamped boundary
+                             condition. Used only to identify the clamped/free transition
+                             corners that receive additional refinement.
     """
 
     geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
     resolution: int = 2
     hole_refine: int = 2
     clamped_outer_edges: tuple[str, ...] = ("left", "top")
-    bc_transition_fraction: float = 0.45
-    bc_transition_samples: int = 40
 
     def generate(self) -> HeterosisMesh:
         try:
@@ -770,400 +549,3 @@ class GmshBoundarySensitiveQ8Generator:
             return HeterosisMesh.from_arrays(node_coordinates=node_coordinates, w_location_matrix=w_location_matrix)
         finally:
             gmsh.finalize()
-
-
-def _distance_to_axis_aligned_rectangle(
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    x_min: float,
-    x_max: float,
-    y_min: float,
-    y_max: float,
-) -> np.ndarray:
-    dx = np.maximum.reduce([x_min - x, np.zeros_like(x), x - x_max])
-    dy = np.maximum.reduce([y_min - y, np.zeros_like(y), y - y_max])
-    return np.sqrt(dx**2 + dy**2)
-
-
-def _infer_geometry_from_mesh(mesh: HeterosisMesh) -> PlateWithHoleGeometry:
-    # Mesh was generated from axis-aligned rectangles; infer from coordinates.
-    x = mesh.node_coordinates[:, 0]
-    y = mesh.node_coordinates[:, 1]
-    outer_width = float(np.max(x) - np.min(x))
-    outer_height = float(np.max(y) - np.min(y))
-
-    # The hole boundary nodes are those that have a near-zero distance to the hole rectangle;
-    # however we don't know the hole rectangle a priori. Infer it from missing elements is hard,
-    # so we store geometry via generator and only use this for WarpedInteriorQ8Generator,
-    # where the base generator is expected to be one of the structured rectangle-based ones.
-    #
-    # We reconstruct the hole rectangle from the most common interior "gaps":
-    # take the set of unique x,y coordinates and find the largest gap around the center.
-    ux = np.unique(np.round(x, 9))
-    uy = np.unique(np.round(y, 9))
-    xc = np.min(ux) + 0.5 * outer_width
-    yc = np.min(uy) + 0.5 * outer_height
-
-    def find_gap(u: np.ndarray, center: float) -> tuple[float, float]:
-        dif = np.diff(u)
-        # look for the largest gap nearest the center
-        gap_idx = int(np.argmax(dif))
-        # fallback: choose gap whose midpoint is closest to center
-        midpoints = 0.5 * (u[:-1] + u[1:])
-        gap_idx = int(np.argmin(np.abs(midpoints - center)))
-        return float(u[gap_idx]), float(u[gap_idx + 1])
-
-    hole_x_min, hole_x_max = find_gap(ux, xc)
-    hole_y_min, hole_y_max = find_gap(uy, yc)
-
-    hole_width = hole_x_max - hole_x_min
-    hole_height = hole_y_max - hole_y_min
-    return PlateWithHoleGeometry(
-        outer_width=outer_width,
-        outer_height=outer_height,
-        hole_width=hole_width,
-        hole_height=hole_height,
-    )
-
-
-def _build_q8_mesh_from_cartesian_lines(
-    geometry: PlateWithHoleGeometry,
-    *,
-    x_lines: np.ndarray,
-    y_lines: np.ndarray,
-) -> HeterosisMesh:
-    nodes: list[tuple[float, float]] = []
-    node_ids: dict[tuple[float, float], int] = {}
-    elements: list[list[int]] = []
-
-    def get_node_id(x: float, y: float) -> int:
-        key = _node_key(x, y)
-        if key not in node_ids:
-            node_ids[key] = len(nodes)
-            nodes.append((x, y))
-        return node_ids[key]
-
-    for ix in range(len(x_lines) - 1):
-        x0 = float(x_lines[ix])
-        x1 = float(x_lines[ix + 1])
-        x_mid = 0.5 * (x0 + x1)
-
-        in_middle_x = (x0 >= geometry.hole_x_min) and (x1 <= geometry.hole_x_max)
-        for iy in range(len(y_lines) - 1):
-            y0 = float(y_lines[iy])
-            y1 = float(y_lines[iy + 1])
-            y_mid = 0.5 * (y0 + y1)
-
-            in_middle_y = (y0 >= geometry.hole_y_min) and (y1 <= geometry.hole_y_max)
-            if in_middle_x and in_middle_y:
-                continue
-
-            local = [
-                get_node_id(x0, y0),
-                get_node_id(x1, y0),
-                get_node_id(x1, y1),
-                get_node_id(x0, y1),
-                get_node_id(x_mid, y0),
-                get_node_id(x1, y_mid),
-                get_node_id(x_mid, y1),
-                get_node_id(x0, y_mid),
-            ]
-            elements.append(local)
-
-    node_coordinates = np.asarray(nodes, dtype=float)
-    w_location_matrix = np.asarray(elements, dtype=int).T
-    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates, w_location_matrix=w_location_matrix)
-
-
-def generate_structured_q8_plate_with_hole_mesh(
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry(),
-    n_left: int = 6,
-    n_middle_x: int = 12,
-    n_right: int = 6,
-    n_bottom: int = 4,
-    n_middle_y: int = 10,
-    n_top: int = 6,
-) -> HeterosisMesh:
-    """Backward-compatible wrapper around `EightBlockStructuredQ8Generator`."""
-    return EightBlockStructuredQ8Generator(
-        geometry=geometry,
-        n_left=n_left,
-        n_middle_x=n_middle_x,
-        n_right=n_right,
-        n_bottom=n_bottom,
-        n_middle_y=n_middle_y,
-        n_top=n_top,
-    ).generate()
-
-
-def generate_rectangular_heterosis_mesh(width: float, height: float, nx: int, ny: int) -> HeterosisMesh:
-    """Generate a structured heterosis mesh for a full rectangle."""
-    if width <= 0.0 or height <= 0.0:
-        raise ValueError("width and height must be positive.")
-    if nx < 1 or ny < 1:
-        raise ValueError("nx and ny must be >= 1.")
-
-    # Build geometry nodes on the Q8 pattern; Q9-style rotational interpolation nodes are added internally.
-    i_max = 2 * nx
-    j_max = 2 * ny
-    x_grid = np.linspace(0.0, width, i_max + 1)
-    y_grid = np.linspace(0.0, height, j_max + 1)
-
-    node_id_map: dict[tuple[int, int], int] = {}
-    node_coordinates: list[list[float]] = []
-
-    for j in range(j_max + 1):
-        for i in range(i_max + 1):
-            # Exclude element center geometry nodes (odd, odd) from the displacement-node layout.
-            if (i % 2 == 1) and (j % 2 == 1):
-                continue
-            node_id_map[(i, j)] = len(node_coordinates)
-            node_coordinates.append([float(x_grid[i]), float(y_grid[j])])
-
-    elements: list[list[int]] = []
-    for ey in range(ny):
-        for ex in range(nx):
-            i0 = 2 * ex
-            j0 = 2 * ey
-            # Local displacement-node order: bl, br, tr, tl, mid-bottom, mid-right, mid-top, mid-left.
-            local_keys = [
-                (i0, j0),
-                (i0 + 2, j0),
-                (i0 + 2, j0 + 2),
-                (i0, j0 + 2),
-                (i0 + 1, j0),
-                (i0 + 2, j0 + 1),
-                (i0 + 1, j0 + 2),
-                (i0, j0 + 1),
-            ]
-            elements.append([node_id_map[k] for k in local_keys])
-
-    node_coordinates_arr = np.asarray(node_coordinates, dtype=float)
-    w_location_matrix = np.asarray(elements, dtype=int).T
-    return HeterosisMesh.from_arrays(node_coordinates=node_coordinates_arr, w_location_matrix=w_location_matrix)
-
-
-def generate_quarter_circle_heterosis_mesh(R: float, n_el: int) -> HeterosisMesh:
-    """
-    Structured Q8 mesh for a quarter-circle disc (x ≥ 0, y ≥ 0) of radius R.
-
-    Topology: n_el × n_el elements on a polar grid.
-    The inner boundary sits at r_min = R / (4 * n_el) so the innermost ring of
-    elements is non-degenerate. As n_el increases r_min → 0 and the mesh
-    converges to the full disc.
-
-    Node ordering follows the same Q8 convention as the rectangular mesh:
-    counter-clockwise, starting from the inner/low-angle corner.
-
-        3 ── 6 ── 2      (inner=low-r, outer=high-r,
-        │          │       left=low-θ, right=high-θ)
-        7          5
-        │          │
-        0 ── 4 ── 1
-    """
-    if R <= 0.0:
-        raise ValueError("R must be positive.")
-    if n_el < 1:
-        raise ValueError("n_el must be >= 1.")
-
-    r_min = R / (4.0 * n_el)
-    r_values     = np.linspace(r_min, R,         2 * n_el + 1)
-    theta_values = np.linspace(0.0,   np.pi / 2, 2 * n_el + 1)
-
-    # Build all Q8 node positions.  Skip element-centre positions (i odd AND j odd);
-    # those are not part of the Q8 serendipity layout.
-    node_id_map: dict[tuple[int, int], int] = {}
-    node_coords: list[list[float]] = []
-    for i in range(2 * n_el + 1):
-        for j in range(2 * n_el + 1):
-            if i % 2 == 1 and j % 2 == 1:
-                continue
-            r     = float(r_values[i])
-            theta = float(theta_values[j])
-            node_id_map[(i, j)] = len(node_coords)
-            node_coords.append([r * np.cos(theta), r * np.sin(theta)])
-
-    elements: list[list[int]] = []
-    for er in range(n_el):      # radial element index
-        for ea in range(n_el):  # angular element index
-            i0, j0 = 2 * er, 2 * ea
-            local_keys = [
-                (i0,     j0    ),   # 0: inner, low θ
-                (i0 + 2, j0    ),   # 1: outer, low θ
-                (i0 + 2, j0 + 2),   # 2: outer, high θ
-                (i0,     j0 + 2),   # 3: inner, high θ
-                (i0 + 1, j0    ),   # 4: mid-radial, low θ  side
-                (i0 + 2, j0 + 1),   # 5: mid-angular, outer side
-                (i0 + 1, j0 + 2),   # 6: mid-radial, high θ side
-                (i0,     j0 + 1),   # 7: mid-angular, inner side
-            ]
-            elements.append([node_id_map[k] for k in local_keys])
-
-    node_coordinates  = np.asarray(node_coords, dtype=float)
-    w_location_matrix = np.asarray(elements,    dtype=int).T
-    return HeterosisMesh.from_arrays(
-        node_coordinates=node_coordinates,
-        w_location_matrix=w_location_matrix,
-    )
-
-
-def generate_rectangular_q8_mesh(width: float, height: float, nx: int, ny: int) -> HeterosisMesh:
-    """Backward-compatible alias. Prefer generate_rectangular_heterosis_mesh."""
-    return generate_rectangular_heterosis_mesh(width=width, height=height, nx=nx, ny=ny)
-
-
-
-@dataclass(frozen=True)
-class TargetAwareWarpedQ8Generator:
-    """
-    Conforming graded mesh with interior mapping focused on benchmark critical regions.
-
-    Parameters:
-        resolution: Global density level (larger -> finer mesh).
-        hole_refine: Additional density near hole-adjacent regions.
-        buffer: Buffer-band thickness around the hole.
-        grading_power: Clustering exponent for the graded base mesh.
-        amplitude: Displacement magnitude of the interior coordinate mapping.
-        p: Boundary-decay exponent for the interior mask.
-    """
-
-    geometry: PlateWithHoleGeometry = PlateWithHoleGeometry()
-    resolution: int = 3
-    hole_refine: int = 4
-    buffer: float = 25.0
-    grading_power: float = 1.35
-    amplitude: float = 24.0
-    p: float = 1.45
-
-    def generate(self) -> HeterosisMesh:
-        g = self.geometry
-
-        base_mesh = GradedBoundarySensitiveQ8Generator(
-            geometry=g,
-            resolution=self.resolution,
-            hole_refine=self.hole_refine,
-            buffer=self.buffer,
-            grading_power=self.grading_power,
-        ).generate()
-
-        xy = base_mesh.node_coordinates.copy()
-        x = xy[:, 0]
-        y = xy[:, 1]
-
-        eps = 1e-12
-
-        dist_outer = np.minimum.reduce(
-            [
-                x - 0.0,
-                g.outer_width - x,
-                y - 0.0,
-                g.outer_height - y,
-            ]
-        )
-        dist_hole = _distance_to_axis_aligned_rectangle(
-            x,
-            y,
-            x_min=g.hole_x_min,
-            x_max=g.hole_x_max,
-            y_min=g.hole_y_min,
-            y_max=g.hole_y_max,
-        )
-
-        max_outer = float(np.max(dist_outer) + eps)
-        max_hole = float(np.max(dist_hole) + eps)
-        mask = (
-            np.clip(dist_outer / max_outer, 0.0, 1.0) ** self.p
-        ) * (
-            np.clip(dist_hole / max_hole, 0.0, 1.0) ** self.p
-        )
-
-        def gaussian(xc: float, yc: float, sx: float, sy: float) -> np.ndarray:
-            return np.exp(
-                -0.5 * (((x - xc) / sx) ** 2 + ((y - yc) / sy) ** 2)
-            )
-
-        x_mid_hole = 0.5 * (g.hole_x_min + g.hole_x_max)
-        y_mid_hole = 0.5 * (g.hole_y_min + g.hole_y_max)
-
-        right_margin = g.outer_width - g.hole_x_max
-        top_margin = g.outer_height - g.hole_y_max
-        bottom_margin = g.hole_y_min
-        left_margin = g.hole_x_min
-
-        x_a = g.hole_x_max
-        y_a = g.hole_y_min
-
-        load_w = gaussian(
-            x_mid_hole,
-            g.hole_y_max + 0.30 * top_margin,
-            sx=0.18 * g.outer_width,
-            sy=0.10 * g.outer_height,
-        )
-
-        right_leg_w = gaussian(
-            g.hole_x_max + 0.30 * right_margin,
-            y_mid_hole,
-            sx=0.10 * g.outer_width,
-            sy=0.22 * g.outer_height,
-        )
-
-        a_w = gaussian(
-            x_a + 0.28 * right_margin,
-            y_a + 0.28 * bottom_margin,
-            sx=0.10 * g.outer_width,
-            sy=0.10 * g.outer_height,
-        )
-
-        inner_left_corner_w = gaussian(
-            g.hole_x_min - 0.22 * left_margin,
-            g.hole_y_max + 0.22 * top_margin,
-            sx=0.10 * g.outer_width,
-            sy=0.10 * g.outer_height,
-        )
-
-        inner_right_corner_w = gaussian(
-            g.hole_x_max + 0.22 * right_margin,
-            g.hole_y_max + 0.22 * top_margin,
-            sx=0.10 * g.outer_width,
-            sy=0.10 * g.outer_height,
-        )
-
-        bl_w = gaussian(
-            0.12 * g.outer_width,
-            0.12 * g.outer_height,
-            sx=0.16 * g.outer_width,
-            sy=0.16 * g.outer_height,
-        )
-
-        tr_w = gaussian(
-            0.88 * g.outer_width,
-            0.88 * g.outer_height,
-            sx=0.16 * g.outer_width,
-            sy=0.16 * g.outer_height,
-        )
-
-        field_w = np.clip(
-            1.10 * load_w
-            + 1.00 * right_leg_w
-            + 0.95 * a_w
-            + 0.75 * inner_left_corner_w
-            + 0.75 * inner_right_corner_w
-            + 0.70 * bl_w
-            + 0.70 * tr_w,
-            0.0,
-            None,
-        )
-
-        u = (y - 0.5 * g.outer_height) / max(g.outer_height, eps)
-        v = (x - 0.5 * g.outer_width) / max(g.outer_width, eps)
-
-        x_warp = x + self.amplitude * mask * field_w * (0.90 * u + 0.20 * v)
-        y_warp = y - 0.75 * self.amplitude * mask * field_w * (0.90 * v - 0.15 * u)
-
-        warped_xy = np.column_stack([x_warp, y_warp])
-
-        return HeterosisMesh.from_arrays(
-            node_coordinates=warped_xy,
-            w_location_matrix=base_mesh.w_location_matrix,
-        )

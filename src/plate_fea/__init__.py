@@ -47,10 +47,7 @@ from .mesh_generation import (
     GmshBoundarySensitiveQ8Generator,
     PlateWithHoleGeometry,
     UniformBufferRingQ8Generator,
-    UniformEightBlockQ8Generator,
-    generate_quarter_circle_heterosis_mesh,
     generate_rectangular_heterosis_mesh,
-    generate_structured_q8_plate_with_hole_mesh,
 )
 
 # ── Material and element ───────────────────────────────────────────────────────
@@ -59,7 +56,12 @@ from .elements import HeterosisPlateElement
 
 # ── Model, boundary conditions, and loads ─────────────────────────────────────
 from .model import PlateModel
-from .boundary_conditions import EssentialBoundaryCondition, ElementEdgeLineLoad, ElementSurfaceLoad
+from .boundary_conditions import (
+    EssentialBoundaryCondition,
+    ElementEdgeLineLoad,
+    ElementSurfaceLoad,
+    NodalPointLoad,
+)
 
 # ── Assembly and solve ─────────────────────────────────────────────────────────
 from .assembly import assemble_force_vector, assemble_stiffness_matrix
@@ -84,12 +86,9 @@ __all__ = [
     # Mesh and geometry
     "HeterosisMesh",
     "PlateWithHoleGeometry",
-    "generate_quarter_circle_heterosis_mesh",
     "generate_rectangular_heterosis_mesh",
-    "generate_structured_q8_plate_with_hole_mesh",
     "GmshBoundarySensitiveQ8Generator",
     "UniformBufferRingQ8Generator",
-    "UniformEightBlockQ8Generator",
     # Material and element
     "PlateMaterial",
     "HeterosisPlateElement",

@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from plate_fea.boundary_conditions import ElementEdgeLineLoad, ElementSurfaceLoad, EssentialBoundaryCondition
+from plate_fea.boundary_conditions import (
+    ElementEdgeLineLoad,
+    ElementSurfaceLoad,
+    EssentialBoundaryCondition,
+    NodalPointLoad,
+)
 from plate_fea.elements.base import PlateElementBase
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh import HeterosisMesh
@@ -46,6 +51,7 @@ class PlateModel:
     line_loads: list[ElementEdgeLineLoad] = field(default_factory=list)
     surface_loads: list[ElementSurfaceLoad] = field(default_factory=list)
     element_stiffness_kwargs: dict[str, object] = field(default_factory=dict)
+    nodal_loads: list[NodalPointLoad] = field(default_factory=list)
 
     def add_essential_condition(self, condition: EssentialBoundaryCondition) -> None:
         """Attach an essential (Dirichlet) boundary condition to the model."""
@@ -98,3 +104,20 @@ class PlateModel:
         prescribed_dof_indices = np.array(sorted(dof_value_pairs.keys()), dtype=int)
         prescribed_values = np.array([dof_value_pairs[dof_id] for dof_id in prescribed_dof_indices], dtype=float)
         return prescribed_dof_indices, prescribed_values
+
+    def add_nodal_load(self, load: NodalPointLoad) -> None:
+        """Attach a concentrated nodal load to the model."""
+        self.nodal_loads.append(load)
+
+    def get_global_dof(self, field_name: str, node_id: int) -> int:
+        """Global DOF index for a named field at the corresponding node id."""
+        if field_name == "w":
+            return int(node_id)
+
+        if field_name == "theta_x":
+            return self.get_theta_x_dof(node_id)
+
+        if field_name == "theta_y":
+            return self.get_theta_y_dof(node_id)
+
+        raise ValueError("field_name must be one of: 'w', 'theta_x', 'theta_y'.")

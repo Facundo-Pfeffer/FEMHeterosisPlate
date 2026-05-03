@@ -144,3 +144,53 @@ def sample_fields_at_quadrature_points(
         Q_x=np.array(Q_x_list, dtype=float),
         Q_y=np.array(Q_y_list, dtype=float),
     )
+
+@dataclass(frozen=True)
+class SampledWField:
+    """Transverse displacement sampled at element quadrature points."""
+    x: np.ndarray
+    y: np.ndarray
+    w: np.ndarray
+
+
+def sample_w_at_quadrature_points(
+    mesh: HeterosisMesh,
+    displacement: np.ndarray,
+    quadrature_order: tuple[int, int] = (2, 2),
+) -> SampledWField:
+    """
+    Sample the transverse displacement w at element quadrature points.
+
+    This uses the repository HeterosisPlateElement Q8 interpolation rather
+    than duplicating shape functions inside validation tests.
+    """
+    element = HeterosisPlateElement()
+    rule = tensor_product_rule(
+        order_x=quadrature_order[0],
+        order_y=quadrature_order[1],
+    )
+
+    x_values: list[float] = []
+    y_values: list[float] = []
+    w_values: list[float] = []
+
+    for element_id in range(mesh.total_element_number):
+        geometry_coordinates = mesh.get_geometry_coordinates(element_id)
+        w_node_ids = mesh.w_location_matrix[:, element_id]
+        element_w = displacement[w_node_ids]
+
+        for point in rule.points:
+            xi = float(point[0])
+            eta = float(point[1])
+
+            n_w = element.q8_shape_functions(xi, eta)
+
+            x_values.append(float(n_w @ geometry_coordinates[:, 0]))
+            y_values.append(float(n_w @ geometry_coordinates[:, 1]))
+            w_values.append(float(n_w @ element_w))
+
+    return SampledWField(
+        x=np.asarray(x_values, dtype=float),
+        y=np.asarray(y_values, dtype=float),
+        w=np.asarray(w_values, dtype=float),
+    )
