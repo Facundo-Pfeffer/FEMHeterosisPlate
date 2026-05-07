@@ -18,7 +18,6 @@ from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
 from plate_fea.model import PlateModel
-from plate_fea.reference_solutions import kirchhoff_ssss_uniform_load_center_deflection_square
 from plate_fea.solver import solve_displacement_system
 
 
@@ -65,13 +64,17 @@ def test_ssss_uniform_pressure_center_matches_navier_series() -> None:
     centre_w_node = int(np.argmin(np.linalg.norm(mesh.node_coordinates - centre_m, axis=1)))
     w_centre_m = float(displacement[centre_w_node])
 
-    w_navier_m = kirchhoff_ssss_uniform_load_center_deflection_square(
-        side=a_m,
-        pressure=abs(pressure_pa),
-        young_modulus=young_pa,
-        poisson_ratio=nu,
-        thickness=thickness_m,
-    )
+    # Kirchhoff SSSS square centre deflection (Navier series).
+    d = young_pa * thickness_m**3 / (12.0 * (1.0 - nu**2))
+    pi = np.pi
+    series_sum = 0.0
+    n_series_terms = 120
+    for m in range(1, n_series_terms + 1, 2):
+        for n in range(1, n_series_terms + 1, 2):
+            series_sum += (np.sin(0.5 * m * pi) * np.sin(0.5 * n * pi)) / (
+                m * n * (m * m + n * n) ** 2
+            )
+    w_navier_m = (16.0 * abs(pressure_pa) * a_m**4) / (pi**6 * d) * series_sum
 
     np.testing.assert_allclose(
         w_centre_m,

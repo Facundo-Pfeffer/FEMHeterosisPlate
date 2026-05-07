@@ -20,7 +20,6 @@ from plate_fea.elements import HeterosisPlateElement
 from plate_fea.materials import PlateMaterial
 from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
 from plate_fea.model import PlateModel
-from plate_fea.reference_solutions import kirchhoff_cccc_uniform_load_center_deflection_square
 from plate_fea.solver import solve_displacement_system
 
 
@@ -68,13 +67,11 @@ def test_clamped_square_uniform_pressure_center_matches_kirchhoff_factor() -> No
     centre_w_node = int(np.argmin(np.linalg.norm(mesh.node_coordinates - centre_m, axis=1)))
     w_centre_m = float(displacement[centre_w_node])
 
-    w_kirchhoff_m = kirchhoff_cccc_uniform_load_center_deflection_square(
-        side=a_m,
-        pressure=abs(pressure_pa),
-        young_modulus=young_pa,
-        poisson_ratio=nu,
-        thickness=thickness_m,
-    )
+    # Kirchhoff CCCC square centre deflection:
+    # w = beta * q * a^4 / D, D = E t^3 / (12 (1 - nu^2)), beta ~= 0.00126532 for nu ~= 0.3.
+    d = young_pa * thickness_m**3 / (12.0 * (1.0 - nu**2))
+    beta = 0.00126532
+    w_kirchhoff_m = beta * abs(pressure_pa) * a_m**4 / d
 
     assert w_centre_m < 0.0
     np.testing.assert_allclose(

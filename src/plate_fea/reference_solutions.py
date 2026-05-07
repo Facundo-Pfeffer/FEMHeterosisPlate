@@ -1,65 +1,221 @@
 """
-Closed-form and series references for plate benchmarks.
+CCCC square plate, uniform pressure: FE vs Kirchhoff centre deflection.
 
-Use a **single consistent system** end-to-end (e.g. SI: lengths in metres, pressure in
-pascals, Young's modulus in pascals) so FE assembly and analytical formulas stay comparable.
+Classical thin plate: all edges clamped (w = ∂w/∂n = 0 in Kirchhoff); uniform q.
+FE: w = theta_x = theta_y = 0 on boundary w-nodes (clamped heterosis plate).
+
+Reference:
+1. Kirchhoff tabulated coefficient: w = beta q a^4 / D, beta ~= 0.00126532.
+2. Taylor-Govindjee double-cosine Ritz solution for the same clamped
+   Kirchhoff plate problem, solved through the Sherman-Morrison-Woodbury
+   reduction.
+
+Sign: model pressure < 0 implies w < 0; reference uses +|q|, then the sign is restored.
+
+rtol=0.002: heterosis plate shear + Q8 mesh vs thin-plate reference.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+from plate_fea.boundary_conditions import ElementSurfaceLoad, EssentialBoundaryCondition
+from plate_fea.elements import HeterosisPlateElement
+from plate_fea.materials import PlateMaterial
+from plate_fea.mesh_generation import generate_rectangular_heterosis_mesh
+from plate_fea.model import PlateModel
+from plate_fea.solver import solve_displacement_system
 
-def kirchhoff_ssss_uniform_load_center_deflection_square(
-    side: float,
-    pressure: float,
-    young_modulus: float,
-    poisson_ratio: float,
-    thickness: float,
+
+def _taylor_govindjee_clamped_rectangular_plate_deflection(
     *,
-    n_series_terms: int = 120,
+    x_m: float,
+    y_m: float,
+    width_m: float,
+    height_m: float,
+    pressure_pa: float,
+    bending_stiffness: float,
+    terms_x: int = 200,
+    terms_y: int = 200,
 ) -> float:
-    """
-    Kirchhoff square plate SSSS, uniform pressure: Navier series at the centre.
+    if width_m <= 0.0 or height_m <= 0.0:
+        raise ValueError("Plate dimensions must be positive.")
+    if bending_stiffness <= 0.0:
+        raise ValueError("Plate bending stiffness must be positive.")
+    if terms_x < 1 or terms_y < 1:
+        raise ValueError("The number of series terms must be positive.")
 
-    Domain ``[0, a]^2``, load ``q``, stiffness ``D = E t^3 / (12(1 - ν^2))``:
+    xi = x_m / width_m
+    eta = y_m / height_m
+    if not (0.0 <= xi <= 1.0 and 0.0 <= eta <= 1.0):
+        raise ValueError("The evaluation point must lie within the plate domain.")
 
-        w(a/2,a/2) = (16 q a^4)/(π^6 D) Σ_{m,n odd} sin(mπ/2)sin(nπ/2)/(mn(m²+n²)²).
+    m = np.arange(1, terms_x + 1, dtype=np.float64)
+    n = np.arange(1, terms_y + 1, dtype=np.float64)
 
-    Positive ``pressure`` is positive ``q``; deflection is positive in the same sense as ``q``.
-    """
-    d = young_modulus * thickness**3 / (12.0 * (1.0 - poisson_ratio**2))  # D [N·m]
-    a = side  # a [m]
-    q = pressure  # q [Pa] = [N/m²]
+    m_grid = m[None, :]
+    n_grid = n[:, None]
 
-    pi = np.pi
-    series_sum = 0.0
-    for m in range(1, n_series_terms + 1, 2):
-        for n in range(1, n_series_terms + 1, 2):
-            series_sum += (np.sin(0.5 * m * pi) * np.sin(0.5 * n * pi)) / (m * n * (m * m + n * n) ** 2)
+    aspect = width_m / height_m
 
-    return (16.0 * q * a**4) / (pi**6 * d) * series_sum  # w [m]
+    a_diag = (m_grid**2 + (aspect * n_grid) ** 2) ** 2
+    a_inv = 1.0 / a_diag
+
+    load_vector_value = (
+        pressure_pa * width_m**4 / (4.0 * np.pi**4 * bending_stiffness)
+    )
+    a_inv_b = load_vector_value * a_inv
+
+    d_diag = np.concatenate(
+        (
+            2.0 * m**4,
+            2.0 * (aspect * n) ** 4,
+        )
+    )
+
+    reduced_size = terms_x + terms_y
+    reduced_matrix = np.zeros((reduced_size, reduced_size), dtype=np.float64)
+
+    reduced_matrix[:terms_x, :terms_x] = np.diag(a_inv.sum(axis=0))
+    reduced_matrix[:terms_x, terms_x:] = a_inv.T
+    reduced_matrix[terms_x:, :terms_x] = a_inv
+    reduced_matrix[terms_x:, terms_x:] = np.diag(a_inv.sum(axis=1))
+
+    reduced_matrix += np.diag(1.0 / d_diag)
+
+    reduced_rhs = np.concatenate(
+        (
+            a_inv_b.sum(axis=0),
+            a_inv_b.sum(axis=1),
+        )
+    )
+
+    scale = 1.0 / np.sqrt(np.diag(reduced_matrix))
+    scaled_matrix = scale[:, None] * reduced_matrix * scale[None, :]
+    scaled_rhs = scale * reduced_rhs
+
+    scaled_solution = np.linalg.solve(scaled_matrix, scaled_rhs)
+    reduced_solution = scale * scaled_solution
+
+    correction = (
+        reduced_solution[:terms_x][None, :]
+        + reduced_solution[terms_x:][:, None]
+    ) * a_inv
+    coefficients = a_inv_b - correction
+
+    basis_x = 1.0 - np.cos(2.0 * np.pi * m * xi)
+    basis_y = 1.0 - np.cos(2.0 * np.pi * n * eta)
+
+    return float(basis_y @ coefficients @ basis_x)
 
 
-# Centre deflection factor w D / (q a^4) for a Kirchhoff square plate, all edges clamped (CCCC),
-# uniform pressure; ν ≈ 0.3 (factor varies only slightly with ν). Tabulated e.g. in
-# Timoshenko & Woinowsky-Krieger, *Theory of Plates and Shells*.
-_KIRCHHOFF_CCCC_SQUARE_UNIFORM_CENTER_FACTOR = 0.00126532
+def test_clamped_square_uniform_pressure_center_matches_kirchhoff_factor() -> None:
+    a_m = 1.0
+    nx = ny = 20
 
+    young_pa = 200.0e9
+    nu = 0.3
+    thickness_m = 5.0e-3
+    pressure_pa = -10.0e3
 
-def kirchhoff_cccc_uniform_load_center_deflection_square(
-    side: float,
-    pressure: float,
-    young_modulus: float,
-    poisson_ratio: float,
-    thickness: float,
-) -> float:
-    """
-    Kirchhoff square plate CCCC, uniform pressure: centre deflection from the classical factor.
+    mesh = generate_rectangular_heterosis_mesh(width=a_m, height=a_m, nx=nx, ny=ny)
+    model = PlateModel(
+        mesh=mesh,
+        constitutive_material=PlateMaterial(
+            young_modulus=young_pa,
+            poisson_ratio=nu,
+            thickness=thickness_m,
+        ),
+        element_formulation=HeterosisPlateElement(),
+    )
 
-        w(a/2, a/2) = β * q * a^4 / D,   D = E t^3 / (12(1 - ν^2)),
+    xy = mesh.node_coordinates
+    x_m = xy[:, 0]
+    y_m = xy[:, 1]
 
-    with ``β ≈ 0.00126532`` for a square and ``ν ≈ 0.3``. Positive ``pressure`` is positive ``q``.
-    """
-    d = young_modulus * thickness**3 / (12.0 * (1.0 - poisson_ratio**2))
-    return _KIRCHHOFF_CCCC_SQUARE_UNIFORM_CENTER_FACTOR * pressure * side**4 / d  # w [m]
+    geom_tol_m = 1.0e-9
+    boundary_w = np.flatnonzero(
+        np.isclose(x_m, 0.0, atol=geom_tol_m)
+        | np.isclose(x_m, a_m, atol=geom_tol_m)
+        | np.isclose(y_m, 0.0, atol=geom_tol_m)
+        | np.isclose(y_m, a_m, atol=geom_tol_m)
+    )
+
+    for field_name in ("w", "theta_x", "theta_y"):
+        model.add_essential_condition(
+            EssentialBoundaryCondition(
+                field_name=field_name,
+                node_ids=boundary_w.tolist(),
+                value=0.0,
+            )
+        )
+
+    for element_id in range(mesh.total_element_number):
+        model.add_surface_load(
+            ElementSurfaceLoad(element_id=element_id, magnitude=pressure_pa)
+        )
+
+    _, _, displacement = solve_displacement_system(model)
+
+    centre_m = np.array([0.5 * a_m, 0.5 * a_m])
+    centre_w_node = int(
+        np.argmin(np.linalg.norm(mesh.node_coordinates - centre_m, axis=1))
+    )
+    w_centre_m = float(displacement[centre_w_node])
+
+    bending_stiffness = (
+        young_pa * thickness_m**3 / (12.0 * (1.0 - nu**2))
+    )
+
+    beta_kirchhoff_tabulated = 0.00126532
+    w_kirchhoff_tabulated_m = (
+        -beta_kirchhoff_tabulated
+        * abs(pressure_pa)
+        * a_m**4
+        / bending_stiffness
+    )
+
+    w_taylor_govindjee_m = _taylor_govindjee_clamped_rectangular_plate_deflection(
+        x_m=0.5 * a_m,
+        y_m=0.5 * a_m,
+        width_m=a_m,
+        height_m=a_m,
+        pressure_pa=pressure_pa,
+        bending_stiffness=bending_stiffness,
+        terms_x=200,
+        terms_y=200,
+    )
+
+    beta_taylor_govindjee_200_terms = 1.265319036e-3
+    w_taylor_govindjee_table_m = (
+        -beta_taylor_govindjee_200_terms
+        * abs(pressure_pa)
+        * a_m**4
+        / bending_stiffness
+    )
+
+    np.testing.assert_allclose(
+        w_taylor_govindjee_m,
+        w_taylor_govindjee_table_m,
+        rtol=1.0e-9,
+        atol=0.0,
+        err_msg="Taylor-Govindjee 200-term coefficient check",
+    )
+
+    np.testing.assert_allclose(
+        w_taylor_govindjee_m,
+        w_kirchhoff_tabulated_m,
+        rtol=1.0e-6,
+        atol=0.0,
+        err_msg="Taylor-Govindjee reference vs Kirchhoff tabulated beta",
+    )
+
+    assert w_centre_m < 0.0
+
+    np.testing.assert_allclose(
+        w_centre_m,
+        w_taylor_govindjee_m,
+        rtol=0.002,
+        atol=0.0,
+        err_msg="Centre w vs Taylor-Govindjee clamped Kirchhoff plate reference",
+    )
