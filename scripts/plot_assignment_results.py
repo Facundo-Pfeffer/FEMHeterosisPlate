@@ -42,6 +42,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.collections import PolyCollection
 from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import MaxNLocator
 
 from plate_fea.plotting import (
     apply_report_style,
@@ -162,7 +163,9 @@ def _plot_elementwise_constant_field(
     )
     collection.set_clim(-vmax, vmax)
     ax.add_collection(collection)
-    fig.colorbar(collection, ax=ax)
+    colorbar = fig.colorbar(collection, ax=ax)
+    colorbar.locator = MaxNLocator(nbins=9)
+    colorbar.update_ticks()
 
     x = mesh.node_coordinates[:, 0]
     y = mesh.node_coordinates[:, 1]
@@ -381,7 +384,6 @@ def main() -> None:
     ax_w.set_ylabel(r"$y$ $\mathrm{(mm)}$")
     ax_w.scatter(*point_a_xy, s=50, color="k", zorder=10)
     ax_w.text(point_a_xy[0] + 8, point_a_xy[1], "A", fontsize=9, fontweight="bold", va="center")
-    _add_caption(fig_w, _UNIT_NOTE)
     _save(fig_w, save_dir, "02_w.png")
 
     # 03–05 – per-element fields using average over each element's quadrature points.
@@ -401,11 +403,25 @@ def main() -> None:
         fig, ax = _plot_elementwise_constant_field(
             result.model.mesh,
             element_avg_values,
-            title=f"{title} (element-avg from quadrature)",
+            title=title,
         )
         ax.set_xlabel(r"$x$ $\mathrm{(mm)}$")
         ax.set_ylabel(r"$y$ $\mathrm{(mm)}$")
-        _add_caption(fig, _UNIT_NOTE)
+        fig.subplots_adjust(left=0.10, right=0.88, top=0.90, bottom=0.13)
+        fig.text(
+            0.5,
+            0.02,
+            (
+                "Element-average from quadrature; "
+                f"min={float(np.min(element_avg_values)):.3e}, "
+                f"max={float(np.max(element_avg_values)):.3e}"
+            ),
+            transform=fig.transFigure,
+            ha="center",
+            va="bottom",
+            fontsize=8.5,
+            color="0.32",
+        )
         _save(fig, save_dir, filename)
 
     print(f"\n  All figures saved to: {save_dir}/")

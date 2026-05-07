@@ -1,59 +1,43 @@
 """
-Convergence study: tip deflection at point A (hole corner) vs mesh refinement.
+Gmsh-only convergence study: tip deflection magnitude at point A vs mesh refinement.
 
-**Unit convention (default, consistent with ``ProblemConfig`` geometry in mm):**
-plan dimensions and ``w`` in **mm**, ``E`` in **MPa** (N/mm²), plate thickness in **mm**,
-hole-top line load ``q`` in **N/mm** (assignment default **1 kN/mm** → ``1000`` N/mm magnitude, sign for direction).
-
-**Convergence:** one plot for all eight ``resolution`` values (default ``-1,0,1,2,3,4,5,6`` —
-one step coarser than ``0..7``; ``-1`` is the coarsest supported buffer-ring level).
-Abscissa: ``N_{\\mathrm{el}}`` (one heterosis plate element per mesh cell); ordinate: ``w_A`` in **µm**
-(three decimals). Each solve is wall-timed. One mesh gallery figure shows all eight levels.
-
-Example (from repo root, after ``pip install -e .``):
-
-    python scripts/convergence_study_point_a.py
-    python scripts/convergence_study_point_a.py --out-dir output --show
-
-Uses ``ProblemConfig`` defaults. ``--resolutions`` must list **exactly eight** integers (all appear on
-the same convergence curve; mesh gallery uses the same order)."""
+Saves:
+  - convergence curve: ``convergence_point_a_gmsh.png``
+  - one mesh PNG per level: ``meshes_by_level/gmsh/Lxx_res_<r>/mesh_nel_<N>.png``
+"""
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
+from time import perf_counter
 
 _repo_root = Path(__file__).resolve().parents[1]
 if str(_repo_root / "src") not in sys.path:
     sys.path.insert(0, str(_repo_root / "src"))
 
-import argparse
-from pathlib import Path
-from time import perf_counter
-
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import FormatStrFormatter, MaxNLocator
-import numpy as np
 
 from plate_fea.mesh import HeterosisMesh
 from plate_fea.plotting import plot_heterosis_mesh
 from plate_fea.problem_orchestrator import ProblemConfig, ProblemResult, solve_plate_problem
 
-# Output basenames (``.png`` added when saving).
-OUT_CONVERGENCE = "convergence_point_a"
-OUT_MESHES = "meshes_eight_levels"
-DEFAULT_RESOLUTIONS_8 = (-1, 0, 1, 2, 3, 4, 5, 6)
+
+OUT_CONVERGENCE = "convergence_point_a_gmsh"
+MESHES_BY_LEVEL_ROOT = "meshes_by_level/gmsh"
+DEFAULT_OUT_DIR = Path("output/convergence")
+DEFAULT_RESOLUTIONS = (-1, 0, 1, 2, 3, 4, 5, 6, 7, 8)
 LENGTH_UNIT_LABEL = "mm"
 
-# Sequential marker / mesh-edge colours: interpolate in sRGB from coarse (cool) to fine (warm).
-# Endpoints are muted for print; progression reads as refinement, not unrelated categories.
-REFINEMENT_COLOR_COARSE: tuple[float, float, float] = (0.20, 0.45, 0.62)  # steel blue
-REFINEMENT_COLOR_FINE: tuple[float, float, float] = (0.78, 0.42, 0.22)  # burnt sienna
+REFINEMENT_COLOR_COARSE: tuple[float, float, float] = (0.20, 0.45, 0.62)
+REFINEMENT_COLOR_FINE: tuple[float, float, float] = (0.78, 0.42, 0.22)
 
 
 def _refinement_colors(n: int) -> list[tuple[float, float, float]]:
-    """``n`` colours along a straight blend coarse → fine (inclusive endpoints)."""
     if n < 1:
         raise ValueError("n must be >= 1")
     if n == 1:
@@ -66,7 +50,6 @@ def _refinement_colors(n: int) -> list[tuple[float, float, float]]:
 
 
 def apply_matlab_plot_style() -> None:
-    """Clean figure defaults (grid, sans-serif) suitable for reports."""
     plt.rcParams.update(
         {
             "figure.facecolor": "white",
@@ -90,28 +73,60 @@ def apply_matlab_plot_style() -> None:
     )
 
 
-def _figure_with_bottom_caption(
-    fig: Figure,
-    *,
-    caption: str,
-    bottom_margin: float = 0.26,
-    left: float = 0.14,
-    right: float = 0.97,
-    top: float = 0.93,
-) -> None:
-    """Reserve space under axes so the caption never overlaps axis labels."""
-    fig.subplots_adjust(left=left, right=right, top=top, bottom=bottom_margin)
-    fig.text(
-        0.5,
-        0.02,
-        caption,
-        transform=fig.transFigure,
-        ha="center",
-        va="bottom",
-        fontsize=8.5,
-        color="0.32",
-        linespacing=1.35,
+def _problem_config_resolution(base: ProblemConfig, resolution: int) -> ProblemConfig:
+    return ProblemConfig(
+        geometry=base.geometry,
+        mesh_strategy="gmsh_boundary_sensitive",
+        resolution=int(resolution),
+        hole_refine=base.hole_refine,
+        buffer=base.buffer,
+        young_modulus=base.young_modulus,
+        poisson_ratio=base.poisson_ratio,
+        thickness=base.thickness,
+        hole_top_shear_load=base.hole_top_shear_load,
+        clamped_outer_edges=base.clamped_outer_edges,
+        tolerance=base.tolerance,
     )
+
+
+def _level_subdir(level_1based: int, resolution: int) -> str:
+    r = int(resolution)
+    slug = f"m{abs(r)}" if r < 0 else str(r)
+    return f"L{level_1based:02d}_res_{slug}"
+
+
+def _save_mesh_level_png(
+    *,
+    mesh: HeterosisMesh,
+    out_path: Path,
+    title: str,
+    edge_color: tuple[float, float, float],
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    show: bool,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    apply_matlab_plot_style()
+    fig, ax = plt.subplots(figsize=(6.0, 4.85))
+    plot_heterosis_mesh(
+        mesh,
+        ax=ax,
+        show_w_nodes=False,
+        show_theta_nodes=False,
+        show_q9_center_nodes=False,
+        element_edge_color=edge_color,
+        title=None,
+    )
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_xlabel(r"$x$ $\mathrm{(mm)}$")
+    ax.set_ylabel(r"$y$ $\mathrm{(mm)}$")
+    ax.set_title(title, fontsize=10)
+    fig.subplots_adjust(left=0.12, right=0.97, top=0.90, bottom=0.12)
+    fig.savefig(out_path, dpi=220)
+    if show:
+        plt.show()
+    plt.close(fig)
 
 
 def run_study(
@@ -119,15 +134,13 @@ def run_study(
     base_config: ProblemConfig,
     resolutions: tuple[int, ...],
     out_dir: Path,
-    convergence_name: str,
-    meshes_name: str,
     length_unit: str,
     show: bool,
 ) -> tuple[ProblemResult, int]:
     if len(resolutions) < 2:
         raise ValueError("Need at least two resolution values for a convergence study.")
 
-    print(f"\n=== convergence study ({len(resolutions)} mesh levels) ===")
+    print(f"\n=== convergence study ({len(resolutions)} mesh levels), gmsh boundary sensitive ===")
 
     meshes: list[HeterosisMesh] = []
     w_a: list[float] = []
@@ -138,18 +151,7 @@ def run_study(
     last_result: ProblemResult | None = None
 
     for r in resolutions:
-        cfg = ProblemConfig(
-            geometry=base_config.geometry,
-            resolution=int(r),
-            hole_refine=base_config.hole_refine,
-            buffer=base_config.buffer,
-            young_modulus=base_config.young_modulus,
-            poisson_ratio=base_config.poisson_ratio,
-            thickness=base_config.thickness,
-            hole_top_shear_load=base_config.hole_top_shear_load,
-            clamped_outer_edges=base_config.clamped_outer_edges,
-            tolerance=base_config.tolerance,
-        )
+        cfg = _problem_config_resolution(base_config, int(r))
         t0 = perf_counter()
         result = solve_plate_problem(cfg)
         wall_s.append(float(perf_counter() - t0))
@@ -159,45 +161,24 @@ def run_study(
         w_a.append(result.point_a_deflection)
         n_el.append(m.total_element_number)
         n_dof.append(m.total_dof_number)
-        dt = wall_s[-1]
-        labels.append(rf"$\mathrm{{res}}={int(r)}$ (${dt:.2f}\,\mathrm{{s}}$)")
+        labels.append(rf"$N_{{\mathrm{{el}}}}={m.total_element_number}$ (${wall_s[-1]:.2f}\,\mathrm{{s}}$)")
 
     assert last_result is not None
 
     w_a_arr = np.asarray(w_a, dtype=float)
     n_el_arr = np.asarray(n_el, dtype=float)
     sort_idx = np.argsort(n_el_arr)
-    # Map each case to a colour by mesh size (coarsest → finest), not by CLI order.
     rank_coarse_to_fine = np.argsort(np.argsort(n_el_arr))
     palette = _refinement_colors(len(resolutions))
     colors = [palette[int(r)] for r in rank_coarse_to_fine]
-
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # $w_A$ is $\mathcal{O}(10^{-4})$ mm; three decimals in mm would collapse every tick to $-0.000$.
-    w_a_micrometre = w_a_arr * 1000.0
+    w_a_micrometre = np.abs(w_a_arr) * 1000.0
 
-    unit_note = (
-        r"Units: length $\mathrm{mm}$, $E$ $\mathrm{MPa}$, line load $q$ $\mathrm{N/mm}$, "
-        r"deflection $w$ $\mathrm{mm}$, resultant $R$ $\mathrm{N}$. "
-        r"Convergence $y$-axis: $w_A$ in $\mu\mathrm{m}$ ($w/\mathrm{mm}\times 10^3$)."
-    )
-
-    # --- Figure 1: convergence ---
     apply_matlab_plot_style()
     fig_c, ax_c = plt.subplots(figsize=(7.2, 5.0))
-
     for ne_i, w_um, lab, c in zip(n_el_arr, w_a_micrometre, labels, colors, strict=True):
-        ax_c.scatter(
-            [ne_i],
-            [w_um],
-            s=70,
-            c=[c],
-            edgecolors="black",
-            linewidths=0.6,
-            zorder=3,
-            label=lab,
-        )
+        ax_c.scatter([ne_i], [w_um], s=70, c=[c], edgecolors="black", linewidths=0.6, zorder=3, label=lab)
 
     ax_c.plot(
         n_el_arr[sort_idx],
@@ -208,30 +189,18 @@ def run_study(
         zorder=1,
     )
     ax_c.set_xlabel(r"Number of heterosis plate elements $N_{\mathrm{el}}$")
-    ax_c.set_ylabel(r"Tip deflection $w_A$ ($\mu\mathrm{m}$)")
-    ax_c.set_title(r"Convergence: $w_A$ at corner A vs mesh refinement")
+    ax_c.set_ylabel(r"Tip deflection magnitude $|w_A|$ ($\mu\mathrm{m}$)")
+    ax_c.set_title(r"Convergence: $|w_A|$ at corner A vs mesh refinement (Gmsh boundary-sensitive)")
     ax_c.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
     ax_c.yaxis.set_major_formatter(FormatStrFormatter("%.3f"))
     ax_c.tick_params(axis="y", which="major", pad=8)
     ax_c.legend(loc="best", framealpha=0.95)
-    _figure_with_bottom_caption(fig_c, caption=unit_note, bottom_margin=0.26, top=0.92, left=0.20)
-    conv_path = out_dir / f"{convergence_name}.png"
+    fig_c.subplots_adjust(left=0.20, right=0.97, top=0.92, bottom=0.14)
+    conv_path = out_dir / f"{OUT_CONVERGENCE}.png"
     fig_c.savefig(conv_path, dpi=220)
     if show:
         plt.show()
     plt.close(fig_c)
-
-    # --- Figure 2: mesh gallery ---
-    apply_matlab_plot_style()
-    n_m = len(meshes)
-    ncols = 4 if n_m > 4 else (2 if n_m > 1 else 1)
-    nrows = (n_m + ncols - 1) // ncols
-    fig_m, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.9 * ncols, 3.75 * nrows),
-    )
-    ax_flat = np.atleast_1d(axes).ravel()
 
     all_xy = np.vstack([m.node_coordinates for m in meshes])
     span = float(np.max(all_xy.max(axis=0) - all_xy.min(axis=0)))
@@ -239,93 +208,63 @@ def run_study(
     xlim = (float(all_xy[:, 0].min() - pad), float(all_xy[:, 0].max() + pad))
     ylim = (float(all_xy[:, 1].min() - pad), float(all_xy[:, 1].max() + pad))
 
-    for idx, (mesh, lab, c) in enumerate(zip(meshes, labels, colors, strict=True)):
-        ax = ax_flat[idx]
-        plot_heterosis_mesh(
-            mesh,
-            ax=ax,
-            show_w_nodes=False,
-            show_theta_nodes=False,
-            element_edge_color=c,
-            title=lab,
+    mesh_root = out_dir / MESHES_BY_LEVEL_ROOT
+    mesh_saved: list[Path] = []
+    for lev, (mesh, c, r_i) in enumerate(zip(meshes, colors, resolutions, strict=True), start=1):
+        sub = mesh_root / _level_subdir(lev, r_i)
+        out_p = sub / f"mesh_nel_{n_el[lev - 1]}.png"
+        _save_mesh_level_png(
+            mesh=mesh,
+            out_path=out_p,
+            title=f"N_el={n_el[lev - 1]}  (t={wall_s[lev - 1]:.2f} s)",
+            edge_color=c,
+            xlim=xlim,
+            ylim=ylim,
+            show=show,
         )
-        ax.set_xlim(xlim)
-        ax.set_ylim(ylim)
-        ax.set_xlabel(r"$x$ $\mathrm{(mm)}$")
-        ax.set_ylabel(r"$y$ $\mathrm{(mm)}$")
-
-    for j in range(len(meshes), len(ax_flat)):
-        ax_flat[j].set_visible(False)
-
-    fig_m.suptitle(
-        rf"Heterosis plate meshes ($N={n_m}$ levels; edge color: coarse $\rightarrow$ fine)",
-        fontsize=13,
-        y=0.995,
-    )
-    fig_m.subplots_adjust(left=0.07, right=0.98, top=0.88, bottom=0.20, hspace=0.35, wspace=0.28)
-    fig_m.text(
-        0.5,
-        0.02,
-        unit_note,
-        transform=fig_m.transFigure,
-        ha="center",
-        va="bottom",
-        fontsize=8.5,
-        color="0.32",
-        linespacing=1.35,
-    )
-    mesh_path = out_dir / f"{meshes_name}.png"
-    fig_m.savefig(mesh_path, dpi=220)
-    if show:
-        plt.show()
-    plt.close(fig_m)
+        mesh_saved.append(out_p)
 
     for r_i, w, ne, nd, dt in zip(resolutions, w_a, n_el, n_dof, wall_s, strict=True):
-        print(
-            f"  res={r_i}:  w_A = {w:.8e} {length_unit}  "
-            f"(N_el = {ne}, DOF = {nd}, wall time = {dt:.3f} s)"
-        )
+        print(f"  res={r_i}:  w_A = {w:.8e} {length_unit}  (N_el = {ne}, DOF = {nd}, wall time = {dt:.3f} s)")
     w_sorted = w_a_arr[sort_idx]
     rel_change = abs(w_sorted[-1] - w_sorted[-2]) / max(abs(w_sorted[-1]), 1e-30)
     print(f"  Relative change |w_last - w_prev| / |w_last|: {rel_change:.4e}")
     print(f"  Total wall time (all solves): {sum(wall_s):.3f} s")
     print(f"  Saved: {conv_path}")
-    print(f"  Saved: {mesh_path}")
+    print(f"  Saved {len(mesh_saved)} mesh figure(s) under: {mesh_root}")
 
     return last_result, max(resolutions)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Convergence study: tip deflection at point A (ProblemConfig defaults).",
-    )
+    parser = argparse.ArgumentParser(description="Gmsh convergence study: tip deflection at point A.")
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("output"),
-        help="Directory for PNG figures (created if missing).",
+        default=DEFAULT_OUT_DIR,
+        help=f"Directory for PNG figures (created if missing); default {DEFAULT_OUT_DIR!s}.",
     )
     parser.add_argument("--show", action="store_true", help="Display figures interactively.")
     parser.add_argument(
         "--resolutions",
         type=str,
-        default=",".join(str(r) for r in DEFAULT_RESOLUTIONS_8),
-        help="Exactly eight integers (mesh refinement indices); all on one convergence plot.",
+        default=",".join(str(r) for r in DEFAULT_RESOLUTIONS),
+        help="Comma-separated mesh refinement indices (default 10 levels: -1..8). Need at least two values.",
     )
     args = parser.parse_args()
 
     res_tuple = tuple(int(x.strip()) for x in args.resolutions.split(",") if x.strip())
-    if len(res_tuple) != 8:
-        parser.error("--resolutions must list exactly eight integers.")
+    if len(res_tuple) < 2:
+        parser.error("--resolutions must contain at least two integers.")
 
+    out_dir: Path = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
     base_config = ProblemConfig()
 
     run_study(
         base_config=base_config,
         resolutions=res_tuple,
-        out_dir=args.out_dir,
-        convergence_name=OUT_CONVERGENCE,
-        meshes_name=OUT_MESHES,
+        out_dir=out_dir,
         length_unit=LENGTH_UNIT_LABEL,
         show=args.show,
     )

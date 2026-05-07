@@ -90,17 +90,7 @@ src/plate_fea/
 | Script | Purpose |
 |--------|---------|
 | `plot_assignment_results.py` | Solve (Gmsh mesh strategy), save nine figures under `output/assignment/`; mesh/clamp styling and element-averaged γ/M/Q plots—see §5.1 |
-| `plot_results.py` | Solve a rectangular plate (SSSS or CCCC) and show result field figures |
-| `convergence_study_point_a.py` | Convergence study: `w_A` vs mesh refinement for the assignment problem |
-| `convergence_compare_uniform_vs_gmsh.py` | Compare uniform-buffer-ring vs Gmsh mesh strategies |
-| `plot_mesh_strategies_comparison.py` | Visual comparison of mesh strategies |
-| `plot_mesh.py` | Static mesh figure for the plate-with-hole |
-| `plot_mesh_sliders.py` | Interactive slider control over mesh density |
-| `plot_mesh_demo.py` | Single-element mesh demo |
-| `run_problem.py` | Headless solve, prints `w_A` to stdout |
-| `run_ssss_square_uniform_pressure.py` | SSSS square plate benchmark solve |
-| `run_clamped_square_uniform_pressure.py` | CCCC square plate benchmark solve |
-| `run_smoke_test.py` | Minimal end-to-end smoke test |
+| `convergence_study_point_a.py` | Gmsh convergence study: point-A `|w_A|` vs mesh refinement + per-level mesh exports |
 
 ### Tests (`tests/`)
 
@@ -152,30 +142,24 @@ Saves nine numbered figures:
 05.1_Q_x.png …       Q_x, Q_y — same element-average convention
 ```
 
-Other figures still use the grey unit note footer where applicable (`_add_caption`).
+### 5.2 Convergence study (Gmsh)
 
-For a headless solve that just prints `w_A`:
+Default figures go under `output/convergence/` (override with `--out-dir`).
 
-```bash
-python scripts/run_problem.py --resolution 2
-```
+Runs the assignment problem with `mesh_strategy="gmsh_boundary_sensitive"` over a resolution ladder (default `-1..8`), plots `|w_A|` vs `N_el`, and saves one mesh PNG per level.
 
-### 5.2 Rectangular plate benchmarks
+Outputs:
+- `convergence_point_a_gmsh.png`
+- `meshes_by_level/gmsh/Lxx_res_<r>/mesh_nel_<N>.png`
 
-```bash
-python scripts/plot_results.py                    # SSSS, 10×10 elements
-python scripts/plot_results.py --bc clamped --nx 12 --ny 12
-```
-
-### 5.3 Convergence study
+Negative resolution indices must use an equals sign, e.g. `--resolutions=-1,0,...`.
 
 ```bash
-python scripts/convergence_study_point_a.py --out-dir output
+python scripts/convergence_study_point_a.py
+python scripts/convergence_study_point_a.py --resolutions=-1,0,1,2,3
 ```
 
-Produces a convergence curve (`w_A` vs `N_el`) and a mesh gallery across eight refinement levels.
-
-### 5.4 Post-processing and plotting
+### 5.3 Post-processing and plotting
 
 ```python
 from plate_fea import (
@@ -199,15 +183,8 @@ Fields available on `SampledFields`: `x`, `y`, `kappa_xx`, `kappa_yy`, `kappa_xy
 
 | Generator | Description |
 |-----------|-------------|
-| `generate_rectangular_heterosis_mesh` | Uniform structured Q8 grid for a rectangle |
-| `generate_centered_quarter_disk_heterosis_mesh` | Structured Q8 grid mapped to a quarter-disc (Hughes circular-plate benchmarks) |
 | `UniformBufferRingQ8Generator` | Plate-with-hole, uniform buffer ring around cut-out |
 | `GmshBoundarySensitiveQ8Generator` | Plate-with-hole, Gmsh distance-field sizing (requires `gmsh`) |
-
-```bash
-python scripts/plot_mesh.py --resolution 2 --hole-refine 2
-python scripts/plot_mesh_sliders.py          # interactive
-```
 
 ---
 
