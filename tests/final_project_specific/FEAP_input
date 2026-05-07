@@ -13,7 +13,7 @@ FEAP * * Plate_cutout_PLATe_T3_DKT_explicit_Nmm
 MATErial,1
   PLATe
   ELAStic ISOTropic 200000 0.25
-  THICkness 20 0.833333333333
+  THIC,,20
 
 COORdinates
      1 0       0.00000000       0.00000000
