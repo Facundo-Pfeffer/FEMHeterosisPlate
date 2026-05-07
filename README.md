@@ -89,7 +89,7 @@ src/plate_fea/
 
 | Script | Purpose |
 |--------|---------|
-| `plot_assignment_results.py` | Solve the plate-with-hole problem and save all result figures to `output/assignment/` |
+| `plot_assignment_results.py` | Solve (Gmsh mesh strategy), save nine figures under `output/assignment/`; mesh/clamp styling and element-averaged γ/M/Q plots—see §5.1 |
 | `plot_results.py` | Solve a rectangular plate (SSSS or CCCC) and show result field figures |
 | `convergence_study_point_a.py` | Convergence study: `w_A` vs mesh refinement for the assignment problem |
 | `convergence_compare_uniform_vs_gmsh.py` | Compare uniform-buffer-ring vs Gmsh mesh strategies |
@@ -139,19 +139,20 @@ python scripts/plot_assignment_results.py
 python scripts/plot_assignment_results.py --resolution 4 --hole-refine 3
 ```
 
-Saves nine numbered figures to `output/assignment/`:
+The script fixes `ProblemConfig(mesh_strategy="gmsh_boundary_sensitive", …)` and calls `solve_plate_problem`; it then plots results (default save dir `output/assignment/`).
+
+Saves nine numbered figures:
 
 ```
-01_mesh.png          mesh with loaded edge and Point A
-02_w.png             transverse displacement w
-03.1_gamma_xz.png    shear strain γ_xz
-03.2_gamma_yz.png    shear strain γ_yz
-04.1_M_xx.png        bending moment M_xx
-04.2_M_yy.png        bending moment M_yy
-04.3_M_xy.png        bending moment M_xy
-05.1_Q_x.png         shear force Q_x
-05.2_Q_y.png         shear force Q_y
+01_mesh.png          mesh + exterior hatched clamp support (left/top), legend (clamped, Q9 centres, loaded edge, Point A); no footer caption
+02_w.png             transverse displacement w (nodal contours, hole masked)
+03.1_gamma_xz.png    γ_xz — constant per element (mean over 3×3 Gauss samples)
+03.2_gamma_yz.png    γ_yz — same element-average convention
+04.1_M_xx.png …      M_xx, M_yy, M_xy — same element-average convention
+05.1_Q_x.png …       Q_x, Q_y — same element-average convention
 ```
+
+Other figures still use the grey unit note footer where applicable (`_add_caption`).
 
 For a headless solve that just prints `w_A`:
 
@@ -199,7 +200,7 @@ Fields available on `SampledFields`: `x`, `y`, `kappa_xx`, `kappa_yy`, `kappa_xy
 | Generator | Description |
 |-----------|-------------|
 | `generate_rectangular_heterosis_mesh` | Uniform structured Q8 grid for a rectangle |
-| `generate_quarter_circle_heterosis_mesh` | Structured Q8 polar grid for a quarter-disc (Hughes circular plate benchmarks) |
+| `generate_centered_quarter_disk_heterosis_mesh` | Structured Q8 grid mapped to a quarter-disc (Hughes circular-plate benchmarks) |
 | `UniformBufferRingQ8Generator` | Plate-with-hole, uniform buffer ring around cut-out |
 | `GmshBoundarySensitiveQ8Generator` | Plate-with-hole, Gmsh distance-field sizing (requires `gmsh`) |
 
